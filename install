@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# 短安装入口：管道执行时从终端读取安装选项。
+set -Eeuo pipefail
+[[ $(id -u) == 0 ]] || { echo '请使用 root，或把末尾 bash 改成 sudo bash。' >&2; exit 1; }
+WORK=$(mktemp -d /tmp/puffer-entry.XXXXXX)
+trap 'rm -rf -- "$WORK"' EXIT
+curl -fsSL --retry 2 https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/scripts/install.sh -o "$WORK/install.sh"
+run_entry() {
+  bash "$WORK/install.sh" "${1:-deploy}"
+  if [[ $# == 0 ]]; then /usr/local/bin/hetun menu; fi
+}
+if [[ -t 0 ]]; then
+  run_entry "$@"
+elif [[ -r /dev/tty ]]; then
+  run_entry "$@" </dev/tty
+else
+  echo '安装需要交互终端。请下载入口文件后用 sudo bash install 执行。' >&2
+  exit 1
+fi

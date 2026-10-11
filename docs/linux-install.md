@@ -3,12 +3,18 @@
 ## 一行启动
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/scripts/install.sh -o /tmp/puffer-install.sh && sudo bash /tmp/puffer-install.sh
+curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/install | sudo bash
 ~~~
 
-脚本下载源码并打开安装步骤；依次输入域名、证书邮箱、模式和本机端口。需要 root/sudo、curl、tar，以及到 GitHub、Docker 软件源和容器仓库的网络。自动准备 Docker 支持 Debian/Ubuntu 和使用 dnf/systemd 的 RPM 9/10 系列；其他发行版先准备 Docker Engine、Compose v2、curl、tar、ss。已有 Docker 会复用；缺少 Compose 或 Docker 未运行会明确提示处理。
+同一入口首次运行部署，已有安装时更新。域名可以留空，直接回车进入 IP 加端口模式，再确认自动推荐的空闲端口。填写域名后选择自动 HTTPS、已有代理共存或域名加端口直连；只有自动 HTTPS 询问证书邮箱。管道入口从 `/dev/tty` 读取选择，SSH 中可以正常交互。需要 root/sudo、curl、tar，以及到 GitHub、Docker 软件源和容器仓库的网络。自动准备 Docker 支持 Debian/Ubuntu 和使用 dnf/systemd 的 RPM 9/10 系列；其他发行版先准备 Docker Engine、Compose v2、curl、tar、ss。已有 Docker 会复用；缺少 Compose 或 Docker 未运行会明确提示处理。
 
-安装独立 Compose 项目 puffer-terminal，不删除或停止其他服务。端口检查发现占用会拒绝，需选择共存模式或换本机端口。没有承诺所有发行版、网络、代理、SELinux 或端口条件都自动适配。
+安装独立 Compose 项目 puffer-terminal，不删除或停止其他服务。默认从 8792–8892 推荐第一个空闲端口；发现 80/443 占用时推荐共存模式。手动指定的端口若被占用会拒绝安装。没有承诺所有发行版、网络、代理、SELinux 或端口条件都自动适配。
+
+## 域名可选与访问方式
+
+**无域名直连**：域名留空，终端监听 `0.0.0.0:<空闲端口>`，使用 `http://服务器公网IP:端口`。不需要邮箱、DNS 或 80/443。服务器安全组须放行所选 TCP 端口；菜单显示的是服务器网卡地址，NAT/云服务器应使用实际公网 IP。HTTP 不加密传输，之后可以在菜单绑定域名切换 HTTPS。管理员请求仍校验同源 Origin 与 CSRF，无域名模式只接受 IP/localhost 主机名，签名凭据、更新清单及下载地址使用实际访问来源。
+
+**域名加端口直连**：填写域名选择模式 3，使用 `http://域名:端口`，无需申请证书。
 
 ## 域名与证书
 
@@ -19,10 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/scr
 ## 进入菜单
 
 ~~~bash
-sudo puffer-terminal
+sudo hetun
 ~~~
 
-菜单包含安装、状态与地址、日志、更新、备份、恢复、修改域名/模式、初始账号、重置密码、启动、停止、证书日志、卸载。
+菜单顶部显示安装版本、提交、容器状态及访问地址。菜单包含安装、状态与地址、日志、更新、检查更新、重启、备份、恢复、修改域名/模式、初始账号、重置密码、启动、停止、证书日志、卸载。旧命令 `puffer-terminal` 保留。修改域名时输入 `-` 可清除域名并切回 IP 直连。
+
+`sudo hetun deploy`：未安装则部署，已安装则更新；`sudo hetun update`：拉取仓库版本、备份、构建 Docker 容器并重启，启动失败回退。这些短命令调用 Docker Compose，无需手动输入 Compose 文件路径。首次入口 URL 使用真实 GitHub 地址；尚未配置短域名，不提供虚构的短网址。
 
 ~~~bash
 sudo puffer-terminal credentials

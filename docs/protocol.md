@@ -1,6 +1,6 @@
 # 河豚终端对接协议 v1
 
-本版提供终端侧 API，三个现有产品后续接入。所有生产请求使用 HTTPS；JSON 请求使用 Content-Type: application/json。Key 和构建节点令牌不得放在 URL、Git 或日志中。
+本版提供终端侧 API，三个现有产品后续接入。域名 HTTPS 模式的请求使用 HTTPS；明确启用无域名直连时支持 HTTP IP:端口，管理员 API 仍校验 Origin 与 CSRF；JSON 请求使用 Content-Type: application/json。Key 和构建节点令牌不得放在 URL、Git 或日志中。
 
 ## 激活与离线凭据
 

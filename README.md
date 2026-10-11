@@ -1,10 +1,10 @@
 # 河豚终端
 
-河豚产品的授权、版本与交付管理后台，首版 `0.1.0`。紫色品牌、日夜主题、响应式 SaaS 界面，页面直接读写服务端数据。
+河豚产品的授权、版本与交付管理后台，版本 `0.1.1`。紫色品牌、日夜主题、响应式 SaaS 界面，页面直接读写服务端数据。
 
 ## 使用流程
 
-1. 在 Linux 服务器安装终端，绑定独立域名。
+1. 在 Linux 服务器一键 Docker 部署，域名可选；留空使用 IP 加端口。
 2. 登录后修改随机生成的初始管理员密码。
 3. 创建客户，签发一个 Key，选择主题中心、打包中心、运营中心的授权范围与设备/域名名额。
 4. 上传软件更新、客户端源码、主题 ZIP 或成品安装包。文件先进入草稿，确认后发布。
@@ -18,18 +18,19 @@
 以 root 或 sudo 执行，服务器需要能够访问 GitHub 与容器仓库。先确保有 curl：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/scripts/install.sh -o /tmp/puffer-install.sh && sudo bash /tmp/puffer-install.sh
+curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/install | sudo bash
 ```
 
-输入域名、证书邮箱与部署模式即可。支持自动准备 Debian/Ubuntu、RPM 9/10 系列环境；其他 Linux 发行版可先安装 Docker Engine 和 `docker compose` 插件。已有 Docker 会复用，不卸载其他项目。完整条件和共存方法见 [Linux 安装说明](docs/linux-install.md)。
+域名直接回车即可用 IP 加端口；自动推荐空闲端口，不占用已有网站的 80/443。填写域名时支持自动 HTTPS、已有网站反向代理、域名加端口直连三种方式，只有自动 HTTPS 才询问证书邮箱。支持自动准备 Debian/Ubuntu、RPM 9/10 系列环境；其他 Linux 发行版可先安装 Docker Engine 和 `docker compose` 插件。已有 Docker 会复用，不卸载其他项目。完整条件和共存方法见 [Linux 安装说明](docs/linux-install.md)。
 
 独立模式使用 Caddy 自动申请/续期 HTTPS 证书；宝塔/Nginx 共存模式只暴露本机端口，由已有站点提供 HTTPS。独立模式需要正确 DNS 解析及公网 80/443，不会绕过网络、域名和端口限制。
 
 安装后打开：
 
 ```bash
-sudo puffer-terminal
-sudo puffer-terminal credentials
+sudo hetun
+sudo hetun update
+sudo hetun credentials
 ```
 
 菜单包含安装、状态、日志、更新、备份、恢复、域名修改、密码重置、启动/停止、证书日志、保留数据卸载。初始账号为 `admin`，密码每次全新安装随机生成，首次登录强制修改。
@@ -45,7 +46,7 @@ $env:HETUN_TERMINAL_STATE = "$env:LOCALAPPDATA\Programs\UniAppTools\projects\het
 node server/index.mjs
 ```
 
-默认地址 `http://127.0.0.1:8792/`。也可以运行 [本地启动脚本](scripts/start-local.ps1)，在外部目录保存进程号与日志。生产环境必须设置 HTTPS 外部地址；不提供 HTTP 公网登录模式。
+默认地址 `http://127.0.0.1:8792/`。也可以运行 [本地启动脚本](scripts/start-local.ps1)，在外部目录保存进程号与日志。无域名直连需显式启用 `HETUN_TERMINAL_DIRECT_HTTP=true`，Linux 菜单自动配置。HTTP 直连不加密网络传输；绑定域名后可切换 HTTPS。
 
 ## 已实现
 
@@ -84,7 +85,7 @@ bash -n scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
 shellcheck -x scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
 ```
 
-GitHub Actions 另在临时 Ubuntu runner 验证 Docker 启动、非 root 运行、Compose 两种部署配置、Caddy 配置、重启持久化、错误域名拒绝、可迁移备份及恢复。证书语法验证不等于真实域名签发。
+GitHub Actions 另在临时 Ubuntu runner 验证 Docker 启动、非 root 运行、Compose 三种部署配置、Caddy 配置、重启持久化、错误域名拒绝、可迁移备份及恢复。证书语法验证不等于真实域名签发。
 
 ## 文档与部署边界
 
@@ -92,4 +93,4 @@ GitHub Actions 另在临时 Ubuntu runner 验证 Docker 启动、非 root 运行
 - [产品及构建接口](docs/protocol.md)
 - [Linux 安装与维护](docs/linux-install.md)
 
-首版为一个管理员、单个服务实例、外部 JSON 原子持久化；不配置多个终端容器共享写入。多管理员、高并发、多服务器部署应升级数据库与任务调度。公网发布依赖实际域名、服务器网络及容器镜像下载条件。Windows、Android、iOS 的原生签名由各自构建执行器完成，本终端核验传输完整性与基本格式，不替代平台签名验证。
+首版为一个管理员、单个服务实例、外部 JSON 原子持久化；不配置多个终端容器共享写入。多管理员、高并发、多服务器部署应升级数据库与任务调度。公网访问依赖服务器网络、安全组以及容器镜像下载条件；域名仅在使用域名访问时需要。Windows、Android、iOS 的原生签名由各自构建执行器完成，本终端核验传输完整性与基本格式，不替代平台签名验证。

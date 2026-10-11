@@ -45,4 +45,14 @@ cp "$archive_to_restore.sha256" "$BACKUP_DIR/portable.tar.gz.sha256"
 printf '%s\nRESTORE\n' "$BACKUP_DIR/portable.tar.gz" | bash "$SOURCE_DIR/scripts/linux-menu.sh" restore
 wait_health
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
-echo 'Linux Docker / 非 root / 重启 / 备份恢复 / Caddy 配置验收通过'
+# 从共存模式切换到无域名模式，确认公网端口映射、真实 HTTP 和数据保留。
+printf '%s\n' '-' '8793' | bash "$SOURCE_DIR/scripts/linux-menu.sh" domain
+load_config
+[[ "$MODE" == direct && "$DOMAIN" == '' && "$BIND_ADDRESS" == 0.0.0.0 && "$PUBLIC_ORIGIN" == '' ]]
+wait_health
+compose --profile tls config -q
+[[ $(compose port terminal 8792) == 0.0.0.0:8793 ]]
+curl -fsS -H 'Host: 192.0.2.10:8793' "http://127.0.0.1:$LOCAL_PORT/" | grep -q '河豚终端'
+[[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
+[[ -L /usr/local/bin/hetun ]]
+echo 'Linux Docker / 无域名 IP访问 / 共存切换 / 非 root / 重启 / 备份恢复 / Caddy 配置验收通过'

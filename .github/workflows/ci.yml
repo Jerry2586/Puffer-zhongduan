@@ -21,8 +21,9 @@ jobs:
         run: npm test
       - name: Linux shell validation
         run: |
-          bash -n scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
-          shellcheck -x scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
+          bash -n install scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh scripts/test-install.sh
+          bash scripts/test-install.sh
+          shellcheck -x install scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh scripts/test-install.sh
   linux-container:
     runs-on: ubuntu-latest
     steps:

@@ -8,9 +8,10 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      HETUN_TERMINAL_ORIGIN: https://${DOMAIN:?Set DOMAIN}
+      HETUN_TERMINAL_ORIGIN: ${PUBLIC_ORIGIN-https://${DOMAIN}}
+      HETUN_TERMINAL_DIRECT_HTTP: ${DIRECT_HTTP:-false}
     ports:
-      - "127.0.0.1:${LOCAL_PORT:-8792}:8792"
+      - "${BIND_ADDRESS:-127.0.0.1}:${LOCAL_PORT:-8792}:8792"
     volumes:
       - ${STATE_DIR:-/var/lib/puffer-terminal/state}:/data:Z
     read_only: true
@@ -28,7 +29,7 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+      ACME_EMAIL: ${ACME_EMAIL:-}
     ports:
       - "80:80"
       - "443:443"

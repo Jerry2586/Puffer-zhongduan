@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { isIP } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -14,15 +15,16 @@ export async function createTerminal(options) {
   const root = await fs.realpath(options.root), realSource = await fs.realpath(sourceRoot), relative = path.relative(realSource, root);
   if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) throw Error('运行数据不能放在源码目录');
   const host = options.host || '127.0.0.1', port = options.port ?? 8792;
+  const directHttp = options.directHttp === true;
   let origin = options.origin || ('http://127.0.0.1:' + port);
   function validateOrigin(value) {
     const u = new URL(value);
     if (u.username || u.password || u.search || u.hash || u.pathname !== '/' || !['http:', 'https:'].includes(u.protocol)) throw Error('终端外部地址必须是完整站点地址');
-    if (u.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) throw Error('公网站点必须使用 HTTPS');
+    if (!directHttp && u.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) throw Error('公网站点必须使用 HTTPS');
     return u.origin;
   }
   origin = validateOrigin(origin);
-  if (!['127.0.0.1', 'localhost', '::1'].includes(host) && new URL(origin).protocol !== 'https:') throw Error('公网监听需要 HTTPS 站点地址');
+  if (!directHttp && !['127.0.0.1', 'localhost', '::1'].includes(host) && new URL(origin).protocol !== 'https:') throw Error('公网监听需要 HTTPS 站点地址');
   const store = await openStore(root), sessions = new Map(), limits = new Map();
   const secure = () => origin.startsWith('https:');
   const cookie = (value, maxAge = 28800) => 'puffer_session=' + value + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (secure() ? '; Secure' : '');
@@ -45,7 +47,15 @@ export async function createTerminal(options) {
     if (!value || value.exp < Date.now()) { if (id) sessions.delete(id); throw failure('请先登录', 401); }
     return { ...value, id };
   }
-  function sameOrigin(req) { if (req.headers.origin !== origin) throw failure('请求来源不匹配', 403); }
+  function requestOrigin(req) {
+    if (!directHttp || options.origin) return origin;
+    let u;
+    try { u = new URL('http://' + req.headers.host); } catch { throw failure('访问地址无效', 400); }
+    const hostname = u.hostname.replace(/^\[|\]$/g, '');
+    if (u.username || u.password || u.pathname !== '/' || u.search || u.hash || (!isIP(hostname) && hostname !== 'localhost')) throw failure('无域名模式请使用服务器 IP 和端口访问', 400);
+    return u.origin;
+  }
+  function sameOrigin(req) { if (req.headers.origin !== requestOrigin(req)) throw failure('请求来源不匹配', 403); }
   function admin(req, write = false) {
     const s = session(req);
     if (write) { sameOrigin(req); if (req.headers['x-csrf-token'] !== s.csrf) throw failure('操作凭证无效，请刷新页面', 403); }
@@ -88,8 +98,9 @@ export async function createTerminal(options) {
     return changed;
   }
   async function handle(req, res) {
-    const u = new URL(req.url, origin), r = u.pathname, m = req.method;
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.0' });
+    const externalOrigin = requestOrigin(req);
+    const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.1' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || b.password.length > 200 || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -112,7 +123,7 @@ export async function createTerminal(options) {
       readyAdmin(req, m !== 'GET');
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.0' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.1' });
       }
       if (r === '/api/customers' && m === 'POST') {
         const b = await body(req), name = String(b.name || '').trim(); if (!name || name.length > 80) throw failure('客户名称为 1–80 字');
@@ -168,9 +179,9 @@ export async function createTerminal(options) {
       if (r === '/api/settings' && m === 'PATCH') { const b = await body(req); if (!Number.isInteger(b.offlineDays) || b.offlineDays < 1 || b.offlineDays > 30 || !Number.isInteger(b.checkHours) || b.checkHours < 1 || b.checkHours > b.offlineDays * 24) throw failure('离线期限为 1–30 天，检查间隔不能超过该期限'); store.state.settings = { offlineDays: b.offlineDays, checkHours: b.checkHours }; store.audit('修改授权策略', 'settings'); await store.commit(); return json(res, 200, store.state.settings); }
       throw failure('管理接口不存在', 404);
     }
-    if (r === '/v1/license/public-key' && m === 'GET') return json(res, 200, { issuer: origin, algorithm: 'Ed25519', keyId: sha(store.publicKey).slice(0, 16), publicKey: store.publicKey });
-    if (['/v1/license/activate', '/v1/license/check'].includes(r) && m === 'POST') { const result = activate(store, req, await body(req), origin); await store.commit(); return json(res, 200, result); }
-    if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'); authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', origin)); }
+    if (r === '/v1/license/public-key' && m === 'GET') return json(res, 200, { issuer: externalOrigin, algorithm: 'Ed25519', keyId: sha(store.publicKey).slice(0, 16), publicKey: store.publicKey });
+    if (['/v1/license/activate', '/v1/license/check'].includes(r) && m === 'POST') { const result = activate(store, req, await body(req), externalOrigin); await store.commit(); return json(res, 200, result); }
+    if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'); authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', externalOrigin)); }
     if (r === '/v1/installations/report' && m === 'POST') { const { binding } = authorizedBinding(store, req), b = await body(req); if (!VERSION.test(b.version || '') || !['current', 'updating', 'failed'].includes(b.updateStatus)) throw failure('安装状态无效'); Object.assign(binding, { version: b.version, updateStatus: b.updateStatus, updateError: String(b.error || '').slice(0, 300), lastSeenAt: now() }); await store.commit(); return json(res, 200, { ok: true }); }
     if (r === '/v1/catalog' && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); return json(res, 200, { releases: store.state.releases.filter(x => x.status === 'published' && x.kind !== 'software' && (x.kind !== 'client-source' || license.permissions.sourceDownload)).map(publicRelease), permissions: license.permissions }); }
     const cr = r.match(/^\/v1\/releases\/([a-f0-9-]{36})\/download$/);

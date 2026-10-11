@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.1.0
+MENU_VERSION=0.1.1
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -20,6 +20,9 @@ load_config() {
   [[ $(stat -c %a "$ENV_FILE") == 600 ]] || die '配置文件权限必须为 600。'
   # shellcheck source=/dev/null
   source "$ENV_FILE"
+  BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}
+  DIRECT_HTTP=${DIRECT_HTTP:-false}
+  PUBLIC_ORIGIN=${PUBLIC_ORIGIN-https://$DOMAIN}
   [[ "$SOURCE_DIR" =~ ^/opt/puffer-terminal/releases/[a-f0-9]{40}$ && "$REVISION" =~ ^[a-f0-9]{40}$ ]] || die '源码路径超出工具目录。'
   [[ "$STATE_DIR" == "$DATA_BASE/state" && "$CADDY_DIR" == "$DATA_BASE/caddy" ]] || die '运行路径超出工具目录。'
 }
@@ -101,30 +104,61 @@ write_config() {
   local temp
   install -d -m 0700 "$CONFIG_DIR"
   temp=$(mktemp "$CONFIG_DIR/.env.XXXXXX")
-  printf 'DOMAIN=%s\nACME_EMAIL=%s\nMODE=%s\nLOCAL_PORT=%s\nSOURCE_DIR=%s\nSTATE_DIR=%s\nCADDY_DIR=%s\nTERMINAL_IMAGE=%s\nREVISION=%s\n' "$DOMAIN" "$ACME_EMAIL" "$MODE" "$LOCAL_PORT" "$SOURCE_DIR" "$STATE_DIR" "$CADDY_DIR" "$TERMINAL_IMAGE" "$REVISION" >"$temp"
+  deployment_settings
+  printf 'DOMAIN=%s\nACME_EMAIL=%s\nMODE=%s\nLOCAL_PORT=%s\nSOURCE_DIR=%s\nSTATE_DIR=%s\nCADDY_DIR=%s\nTERMINAL_IMAGE=%s\nREVISION=%s\nBIND_ADDRESS=%s\nDIRECT_HTTP=%s\nPUBLIC_ORIGIN=%s\n' "$DOMAIN" "$ACME_EMAIL" "$MODE" "$LOCAL_PORT" "$SOURCE_DIR" "$STATE_DIR" "$CADDY_DIR" "$TERMINAL_IMAGE" "$REVISION" "$BIND_ADDRESS" "$DIRECT_HTTP" "$PUBLIC_ORIGIN" >"$temp"
   # 所有输入经校验且没有需要 shell 转义的字符，兼容 Compose --env-file。
   chmod 600 "$temp"
   mv -- "$temp" "$ENV_FILE"
   cp -- "$SOURCE_DIR/deploy/compose.yaml" "$COMPOSE_FILE"
   chmod 600 "$COMPOSE_FILE"
 }
+deployment_settings() {
+  BIND_ADDRESS=127.0.0.1 DIRECT_HTTP=false PUBLIC_ORIGIN=https://$DOMAIN
+  if [[ "$MODE" == direct ]]; then
+    BIND_ADDRESS=0.0.0.0 DIRECT_HTTP=true PUBLIC_ORIGIN=
+    [[ -z "$DOMAIN" ]] || PUBLIC_ORIGIN=http://$DOMAIN:$LOCAL_PORT
+  fi
+}
+port_busy() { [[ -n $(ss -H -ltn "sport = :$1") ]]; }
+free_port() {
+  local candidate
+  for ((candidate=8792; candidate<=8892; candidate++)); do
+    if ! port_busy "$candidate"; then printf '%s' "$candidate"; return; fi
+  done
+  die '8792–8892 均被占用，请指定其他端口。'
+}
 settings_prompt() {
-  local d e m p
-  read -r -p "绑定域名（例如 terminal.example.com）[${DOMAIN:-}]：" d
+  local d e m p suggested
+  read -r -p "绑定域名（可留空，输入 - 清除）[${DOMAIN:-}]：" d
   d=${d:-${DOMAIN:-}}
+  [[ "$d" != - ]] || d=
   d=${d,,}
-  [[ ${#d} -le 253 && "$d" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$ ]] || die '域名无效，不要包含协议、端口或路径。'
-  read -r -p "证书通知邮箱[${ACME_EMAIL:-}]：" e
-  e=${e:-${ACME_EMAIL:-}}
-  [[ "$e" =~ ^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die '邮箱格式无效。'
-  say '1 独立模式：本工具占用 80/443，自动申请并续期证书。'
-  say '2 共存模式：宝塔/Nginx/已有代理负责域名和证书，只使用本机端口。'
-  read -r -p '选择模式 [1]：' m
-  case ${m:-1} in 1) MODE=standalone ;; 2) MODE=reverse-proxy ;; *) die '请选择 1 或 2。';; esac
-  read -r -p "本机服务端口[${LOCAL_PORT:-8792}]：" p
-  p=${p:-${LOCAL_PORT:-8792}}
+  if [[ -n "$d" ]]; then
+    [[ ${#d} -le 253 && "$d" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$ ]] || die '域名无效，不要包含协议、端口或路径。'
+    say '1 自动 HTTPS（空闲 80/443）  2 已有网站反向代理  3 域名加端口直连'
+    suggested=1
+    if port_busy 80 || port_busy 443 || [[ -n $(ss -H -lun 'sport = :443') ]]; then
+      suggested=2
+      say '检测到已有网站占用 80/443，推荐共存模式 2。'
+    fi
+    read -r -p "选择模式 [$suggested]：" m
+    case ${m:-$suggested} in 1) MODE=standalone ;; 2) MODE=reverse-proxy ;; 3) MODE=direct ;; *) die '请选择 1、2 或 3。';; esac
+  else
+    MODE=direct
+    say '无域名模式：使用 http://服务器IP:端口 直接访问，不占用 80/443。'
+  fi
+  e=${ACME_EMAIL:-}
+  if [[ "$MODE" == standalone ]]; then
+    read -r -p "证书通知邮箱[$e]：" e
+    e=${e:-${ACME_EMAIL:-}}
+    [[ "$e" =~ ^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die '邮箱格式无效。'
+  fi
+  suggested=${LOCAL_PORT:-$(free_port)}
+  read -r -p "服务端口[$suggested]：" p
+  p=${p:-$suggested}
   [[ "$p" =~ ^[0-9]{4,5}$ && "$p" -ge 1024 && "$p" -le 65535 ]] || die '端口必须为 1024–65535。'
   DOMAIN=$d ACME_EMAIL=$e LOCAL_PORT=$p
+  deployment_settings
 }
 port_check() {
   local ports port
@@ -144,16 +178,31 @@ start_app() {
 }
 install_menu() {
   install -m 0755 "$SOURCE_DIR/scripts/linux-menu.sh" /usr/local/bin/puffer-terminal
+  ln -sfn /usr/local/bin/puffer-terminal /usr/local/bin/hetun
 }
 show_access() {
-  say "后台地址：https://$DOMAIN"
-  say "本机健康检查：http://127.0.0.1:$LOCAL_PORT/healthz"
-  if [[ "$MODE" == reverse-proxy ]]; then
-    say "请在已有 HTTPS 站点设置反向代理：http://127.0.0.1:$LOCAL_PORT（保留 Host 请求头，上传上限至少 128m）。"
+  if [[ "$MODE" == direct ]]; then
+    local address
+    address=$(hostname -I 2>/dev/null | awk '{print $1}')
+    address=${address:-服务器IP}
+    say "后台地址：http://${DOMAIN:-$address}:$LOCAL_PORT"
+    say "外网请使用服务器公网 IP，安全组放行 TCP $LOCAL_PORT。可稍后通过 hetun domain 绑定域名和 HTTPS。"
   else
-    say '自动 HTTPS 需要域名 A/AAAA 指向本机，公网 80/443 可访问。证书结果请查看菜单中的证书日志。'
+    say "后台地址：https://$DOMAIN"
   fi
-  say '初始密码：sudo puffer-terminal credentials；登录后必须修改。'
+  if [[ "$MODE" == reverse-proxy ]]; then
+    say "已有网站反向代理目标：http://127.0.0.1:$LOCAL_PORT（保留 Host，上传上限至少 128m）。"
+  elif [[ "$MODE" == standalone ]]; then
+    say '自动证书状态请查看证书日志。'
+  fi
+  say '管理菜单：sudo hetun；更新：sudo hetun update；初始账号：sudo hetun credentials'
+}
+check_update() {
+  load_config
+  local latest
+  latest=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits/main" | sed -n 's/^  "sha": "\([a-f0-9]\{40\}\)",$/\1/p' | head -n 1)
+  [[ "$latest" =~ ^[a-f0-9]{40}$ ]] || die '暂时无法检查更新。'
+  if [[ "$latest" == "$REVISION" ]]; then say '已是最新仓库版本。'; else say "发现更新：${REVISION:0:12} → ${latest:0:12}；执行 sudo hetun update。"; fi
 }
 install_app() {
   [[ ! -f "$ENV_FILE" ]] || die '已经安装，请使用 update 或 domain。'
@@ -296,27 +345,37 @@ uninstall_app() {
 }
 menu() {
   while true; do
-    printf '\n河豚终端 Linux 管理菜单 v%s\n' "$MENU_VERSION"
-    printf ' 1 安装与环境准备     2 状态与地址\n 3 服务日志           4 更新终端\n 5 备份               6 恢复备份\n 7 修改域名/部署模式   8 查看初始账号\n 9 重置管理员密码    10 启动\n11 停止              12 证书日志\n13 卸载（保留数据）    0 退出\n'
+    printf '\n╔══════════════════════════════════════╗\n║       河豚终端 · Linux 管理中心       ║\n╚══════════════════════════════════════╝\n菜单版本：%s\n' "$MENU_VERSION"
+    if [[ -f "$ENV_FILE" ]]; then
+      load_config
+      printf '安装版本：%s  提交：%.12s\n' "$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$SOURCE_DIR/package.json" | head -n 1)" "$REVISION"
+      compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' || true
+      show_access
+    else
+      say '运行状态：尚未安装；选择 1 一键部署。'
+    fi
+    printf ' 1 安装与环境准备     2 状态与地址\n 3 服务日志           4 更新终端\n 5 备份               6 恢复备份\n 7 修改域名/部署模式   8 查看初始账号\n 9 重置管理员密码    10 启动\n11 停止              12 证书日志\n13 卸载（保留数据）   14 检查更新\n15 重启服务           0 退出\n'
     read -r -p '请选择：' choice || return
     case "$choice" in
       1) install_app ;; 2) load_config; compose --profile tls ps; show_access ;;
       3) load_config; compose logs --tail=100 -f terminal ;; 4) update_app ;;
       5) backup_app ;; 6) restore_app ;; 7) change_domain ;; 8) load_config; cat "$STATE_DIR/bootstrap-admin.txt" 2>/dev/null || say '初始密码已删除，请使用已设置的密码。' ;;
       9) reset_password ;; 10) start_app ;; 11) load_config; compose --profile tls stop ;;
-      12) load_config; compose --profile tls logs --tail=100 proxy ;; 13) uninstall_app ;; 0) return ;; *) say '选项无效。' ;;
+      12) load_config; compose --profile tls logs --tail=100 proxy ;; 13) uninstall_app ;; 14) check_update ;; 15) load_config; compose restart terminal; wait_health ;; 0) return ;; *) say '选项无效。' ;;
     esac
   done
 }
 main() {
   require_root
   case ${1:-menu} in
+    deploy) if [[ -f "$ENV_FILE" ]]; then update_app; else install_app; fi ;;
     install) install_app ;; menu) menu ;; status) load_config; compose --profile tls ps; show_access ;;
+    check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
     credentials) load_config; cat "$STATE_DIR/bootstrap-admin.txt" ;; reset-password) reset_password ;;
     start) start_app ;; stop) load_config; compose --profile tls stop ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
-    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|install|status|update|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall]' ;;
+    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
   esac
 }
