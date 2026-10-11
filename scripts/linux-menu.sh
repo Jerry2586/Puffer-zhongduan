@@ -28,8 +28,8 @@ up() {
   if [[ "$MODE" == standalone ]]; then compose --profile tls up -d --remove-orphans; else compose up -d --remove-orphans; fi
 }
 wait_health() {
-  local i
-  for i in {1..30}; do
+  local attempt
+  for ((attempt=1; attempt<=30; attempt++)); do
     if curl -fsS --max-time 3 "http://127.0.0.1:$LOCAL_PORT/healthz" >/dev/null; then return 0; fi
     sleep 2
   done
@@ -42,7 +42,9 @@ prerequisites() {
   if command -v docker >/dev/null; then
     docker compose version >/dev/null || die '已有 Docker 缺少 Compose v2 插件。请补装，不会删除已有 Docker。'
     docker info >/dev/null || die 'Docker 服务未运行，请先启动 Docker。'
-    command -v curl >/dev/null && command -v tar >/dev/null && command -v ss >/dev/null || die '请安装 curl、tar 和 iproute2/iproute。'
+    if ! command -v curl >/dev/null || ! command -v tar >/dev/null || ! command -v ss >/dev/null; then
+      die '请安装 curl、tar 和 iproute2/iproute。'
+    fi
     return
   fi
   say "准备安装 Docker Engine 和 Compose，系统：$ID ${VERSION_ID:-}"
@@ -61,7 +63,9 @@ prerequisites() {
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       ;;
     centos|rocky|almalinux|rhel)
-      command -v dnf >/dev/null && command -v systemctl >/dev/null || die '自动安装需要 dnf 和 systemd。'
+      if ! command -v dnf >/dev/null || ! command -v systemctl >/dev/null; then
+        die '自动安装需要 dnf 和 systemd。'
+      fi
       [[ ${VERSION_ID%%.*} -ge 9 ]] || die 'RPM 自动安装支持 9/10 系列；旧系统请自行安装 Docker。'
       dnf install -y ca-certificates curl tar iproute dnf-plugins-core
       curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/puffer-docker.repo
