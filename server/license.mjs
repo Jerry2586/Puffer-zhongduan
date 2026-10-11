@@ -1,0 +1,68 @@
+import crypto from 'node:crypto';
+import { domainToASCII } from 'node:url';
+import { failure, sha, now } from './store.mjs';
+export const PRODUCTS = ['theme-center', 'packer', 'operations'];
+export const PRODUCT_NAMES = { 'theme-center': '主题中心', packer: '打包器', operations: '运营中心', client: 'APP 客户端' };
+export const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?$/;
+export function compareVersions(a, b) {
+  const [ac, ap] = a.split(/-(.*)/s), [bc, bp] = b.split(/-(.*)/s);
+  const aa = ac.split('.').map(Number), bb = bc.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i] > bb[i] ? 1 : -1;
+  if (!ap && bp) return 1; if (ap && !bp) return -1;
+  const ax = (ap || '').split('.'), bx = (bp || '').split('.');
+  for (let i = 0; i < Math.max(ax.length, bx.length); i++) {
+    if (ax[i] === bx[i]) continue;
+    if (ax[i] === undefined) return -1; if (bx[i] === undefined) return 1;
+    const an = /^\d+$/.test(ax[i]), bn = /^\d+$/.test(bx[i]);
+    if (an && bn) return Number(ax[i]) > Number(bx[i]) ? 1 : -1;
+    if (an !== bn) return an ? -1 : 1;
+    return ax[i] > bx[i] ? 1 : -1;
+  }
+  return 0;
+}
+export function hostname(value) {
+  let s = String(value || '').trim().toLowerCase();
+  if (s.includes('://')) { const u = new URL(s); if (u.port || u.username || u.password || u.search || u.hash || u.pathname !== '/') throw failure('域名不能包含路径或凭据'); s = u.hostname; }
+  s = domainToASCII(s.replace(/\.$/, ''));
+  if (s.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/.test(s)) throw failure('请输入有效的完整域名，不含端口');
+  return s;
+}
+export function sign(store, payload) {
+  const bytes = Buffer.from(JSON.stringify(payload));
+  return { algorithm: 'Ed25519', keyId: sha(store.publicKey).slice(0, 16), payload: bytes.toString('base64url'), signature: crypto.sign(null, bytes, store.privateKey).toString('base64url') };
+}
+export function customerLicense(store, req) {
+  const auth = String(req.headers.authorization || '');
+  const key = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!/^HTN_[A-Za-z0-9_-]{43}$/.test(key)) throw failure('请提供授权 Key', 401);
+  const l = store.state.licenses.find(x => x.keyHash === sha(key));
+  if (!l || l.status !== 'active' || Date.parse(l.expiresAt) <= Date.now()) throw failure('授权不存在、已停用或已到期', 403);
+  return l;
+}
+export function publicLicense(l) { const { keyHash, ...rest } = l; return rest; }
+export function activate(store, req, b, issuer) {
+  const license = customerLicense(store, req);
+  if (!PRODUCTS.includes(b.product) || !license.products.includes(b.product)) throw failure('未授权此产品', 403);
+  const binding = b.product === 'operations' ? hostname(b.domain) : String(b.deviceId || '');
+  if (b.product !== 'operations' && !/^[A-Za-z0-9_:-]{8,120}$/.test(binding)) throw failure('设备标识无效');
+  if (!VERSION.test(b.version || '')) throw failure('客户端版本无效');
+  if (typeof b.nonce !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(b.nonce)) throw failure('需要有效的请求随机数');
+  let record = store.state.bindings.find(x => x.licenseId === license.id && x.product === b.product && x.binding === binding);
+  if (record?.status === 'disabled') throw failure('此绑定已停用，请联系管理员', 403);
+  if (!record) {
+    const count = store.state.bindings.filter(x => x.licenseId === license.id && x.product === b.product && x.status === 'active').length;
+    if (count >= license.quotas[b.product]) throw failure('设备或站点授权名额已满', 409);
+    record = { id: crypto.randomUUID(), licenseId: license.id, product: b.product, binding, kind: b.product === 'operations' ? 'domain' : 'device', status: 'active', activatedAt: now() };
+    store.state.bindings.unshift(record); store.audit('产品激活', record.id);
+  }
+  Object.assign(record, { version: b.version, lastSeenAt: now(), label: String(b.label || '').slice(0, 80) });
+  const iat = Math.floor(Date.now() / 1000), days = store.state.settings.offlineDays;
+  const payload = { schemaVersion: 2, issuer, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, checkAfter: Math.min(iat + store.state.settings.checkHours * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
+  return { activationId: record.id, lease: sign(store, payload), offlineDays: days };
+}
+export function authorizedBinding(store, req, product) {
+  const license = customerLicense(store, req);
+  const binding = store.state.bindings.find(x => x.id === req.headers['x-hetun-activation'] && x.licenseId === license.id && x.status === 'active');
+  if (!binding || !license.products.includes(binding.product) || (product && binding.product !== product)) throw failure('请先激活对应产品', 403);
+  return { license, binding };
+}

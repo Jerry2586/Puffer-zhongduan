@@ -1,0 +1,9 @@
+node_modules
+.git
+.env*
+state
+outputs
+backups
+*.key
+*.pem
+*.log

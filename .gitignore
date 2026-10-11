@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+*.pem
+*.key
+*.p12
+*.jks
+state/
+outputs/
+backups/

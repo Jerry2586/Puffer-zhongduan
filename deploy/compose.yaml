@@ -1,0 +1,45 @@
+name: puffer-terminal
+services:
+  terminal:
+    image: ${TERMINAL_IMAGE:-puffer-terminal:local}
+    build:
+      context: ${SOURCE_DIR:-..}
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      HETUN_TERMINAL_ORIGIN: https://${DOMAIN:?Set DOMAIN}
+    ports:
+      - "127.0.0.1:${LOCAL_PORT:-8792}:8792"
+    volumes:
+      - ${STATE_DIR:-/var/lib/puffer-terminal/state}:/data:Z
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  proxy:
+    image: caddy:2-alpine
+    profiles: [tls]
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ${SOURCE_DIR:-..}/deploy/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - ${CADDY_DIR:-/var/lib/puffer-terminal/caddy}/data:/data:Z
+      - ${CADDY_DIR:-/var/lib/puffer-terminal/caddy}/config:/config:Z
+    depends_on:
+      terminal:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

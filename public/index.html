@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>河豚终端 · 产品管理中心</title><link rel="icon" href="/logo.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<section id="login" class="login-shell" hidden>
+  <div class="login-brand"><img src="/logo.svg" alt="河豚"><span>PUFFER CLOUD</span><h1>把每一次交付，<br>连接起来。</h1><p>一个授权，连接主题、打包与运营。<br>在河豚终端统一管理你的产品与版本。</p><div class="login-orbit"><span>主题中心</span><strong>河豚终端</strong><span>打包中心</span><span>运营中心</span></div><small>河豚 · 产品管理基础设施</small></div>
+  <div class="login-area"><button class="theme-toggle icon-button" aria-label="切换日夜模式">☾</button><form id="login-form" class="login-form"><div class="eyebrow">WELCOME BACK</div><h2>登录管理中心</h2><p class="muted">使用管理员账号进入河豚终端</p><label>管理员<input name="username" value="admin" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><p id="login-error" class="error" role="alert"></p><button type="submit" class="button primary wide">进入终端 <span>→</span></button><div class="login-note">首次安装的密码位于服务器私有运行目录。首次登录后，请设置自己的密码。</div></form><small class="login-footer">PUFFER TERMINAL / 统一产品管理</small></div>
+</section>
+<div id="shell" class="shell" hidden>
+  <aside id="sidebar" class="sidebar"><a href="#overview" class="brand"><img src="/logo.svg" alt="河豚标识"><div><strong>河豚终端</strong><small>PUFFER TERMINAL</small></div></a><div class="workspace"><span class="workspace-avatar">P</span><div><strong>产品管理中心</strong><small>统一授权与版本交付</small></div><span class="dot"></span></div><div class="nav-label">工作空间</div><nav id="navigation">
+    <a href="#overview" data-page="overview"><span class="nav-icon">◈</span>总览</a>
+    <a href="#customers" data-page="customers"><span class="nav-icon">♧</span>客户与授权</a>
+    <a href="#bindings" data-page="bindings"><span class="nav-icon">▣</span>设备与站点</a>
+    <div class="nav-label">产品交付</div>
+    <a href="#releases" data-page="releases"><span class="nav-icon">◫</span>版本中心</a>
+    <a href="#jobs" data-page="jobs"><span class="nav-icon">◇</span>构建任务</a>
+    <a href="#nodes" data-page="nodes"><span class="nav-icon">⌘</span>构建节点</a>
+    <div class="nav-label">终端管理</div>
+    <a href="#audit" data-page="audit"><span class="nav-icon">≡</span>操作记录</a>
+    <a href="#settings" data-page="settings"><span class="nav-icon">⚙</span>终端设置</a>
+  </nav><div class="sidebar-bottom"><div class="service-tag"><span class="dot"></span><span id="service-version">终端服务</span></div><button id="logout" class="text-button">退出登录 <span>↗</span></button></div></aside>
+  <div class="main-shell"><header class="topbar"><div><button id="menu-toggle" class="icon-button mobile-menu" aria-label="展开导航">☰</button><span class="crumb">工作空间 <span>/</span> <strong id="breadcrumb">总览</strong></span></div><div class="top-actions"><span id="refresh-state" class="muted">正在连接</span><button id="refresh" class="icon-button" aria-label="刷新数据">↻</button><button class="theme-toggle icon-button" aria-label="切换日夜模式">☾</button><span class="divider"></span><span class="admin-avatar">A</span><span class="admin-name">管理员</span></div></header><main id="content" tabindex="-1"></main><footer class="main-footer">河豚终端 <span>统一授权 · 版本交付 · 构建管理</span></footer></div>
+</div>
+<dialog id="modal"><div class="modal-top"><div><div id="modal-eyebrow" class="eyebrow">PUFFER TERMINAL</div><h2 id="modal-title"></h2></div><button id="modal-close" class="icon-button" aria-label="关闭">×</button></div><div id="modal-body"></div></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+</body></html>

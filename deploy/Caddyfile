@@ -1,0 +1,15 @@
+{
+  email {$ACME_EMAIL}
+}
+{$DOMAIN} {
+  encode zstd gzip
+  request_body {
+    max_size 128MB
+  }
+  reverse_proxy terminal:8792
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options nosniff
+    -Server
+  }
+}

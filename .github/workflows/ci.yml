@@ -1,0 +1,31 @@
+name: Terminal verification
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and assets
+        run: npm run check
+      - name: Service integration tests
+        env:
+          HETUN_TEST_ROOT: ${{ runner.temp }}/puffer-test
+        run: npm test
+      - name: Linux shell validation
+        run: |
+          bash -n scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
+          shellcheck -x scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh
+  linux-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker and maintenance acceptance
+        run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_SHA bash scripts/verify-linux.sh
