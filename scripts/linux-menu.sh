@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.1.3
+MENU_VERSION=0.2.0
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -28,7 +28,7 @@ load_config() {
 }
 compose() { docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 up() {
-  if [[ "$MODE" == standalone ]]; then compose --profile tls up -d --remove-orphans; else compose up -d --remove-orphans; fi
+  if [[ "$MODE" == standalone ]]; then compose --profile tls up -d --remove-orphans; elif [[ "$MODE" == tunnel ]]; then compose --profile tunnel up -d --remove-orphans; else compose up -d --remove-orphans; fi
 }
 wait_health() {
   local attempt
@@ -102,14 +102,14 @@ resolve_source() {
 }
 write_config() {
   local temp
-  install -d -m 0700 "$CONFIG_DIR"
-  temp=$(mktemp "$CONFIG_DIR/.env.XXXXXX")
+  install -d -m 0700 "$CONFIG_DIR" || return 1
+  temp=$(mktemp "$CONFIG_DIR/.env.XXXXXX") || return 1
   deployment_settings
-  printf 'DOMAIN=%s\nACME_EMAIL=%s\nMODE=%s\nLOCAL_PORT=%s\nSOURCE_DIR=%s\nSTATE_DIR=%s\nCADDY_DIR=%s\nTERMINAL_IMAGE=%s\nREVISION=%s\nBIND_ADDRESS=%s\nDIRECT_HTTP=%s\nPUBLIC_ORIGIN=%s\n' "$DOMAIN" "$ACME_EMAIL" "$MODE" "$LOCAL_PORT" "$SOURCE_DIR" "$STATE_DIR" "$CADDY_DIR" "$TERMINAL_IMAGE" "$REVISION" "$BIND_ADDRESS" "$DIRECT_HTTP" "$PUBLIC_ORIGIN" >"$temp"
+  printf 'DOMAIN=%s\nACME_EMAIL=%s\nMODE=%s\nLOCAL_PORT=%s\nSOURCE_DIR=%s\nSTATE_DIR=%s\nCADDY_DIR=%s\nTERMINAL_IMAGE=%s\nREVISION=%s\nBIND_ADDRESS=%s\nDIRECT_HTTP=%s\nPUBLIC_ORIGIN=%s\n' "$DOMAIN" "$ACME_EMAIL" "$MODE" "$LOCAL_PORT" "$SOURCE_DIR" "$STATE_DIR" "$CADDY_DIR" "$TERMINAL_IMAGE" "$REVISION" "$BIND_ADDRESS" "$DIRECT_HTTP" "$PUBLIC_ORIGIN" >"$temp" || return 1
   # 所有输入经校验且没有需要 shell 转义的字符，兼容 Compose --env-file。
-  chmod 600 "$temp"
-  mv -- "$temp" "$ENV_FILE"
-  cp -- "$SOURCE_DIR/deploy/compose.yaml" "$COMPOSE_FILE"
+  chmod 600 "$temp" || return 1
+  mv -- "$temp" "$ENV_FILE" || return 1
+  cp -- "$SOURCE_DIR/deploy/compose.yaml" "$COMPOSE_FILE" || return 1
   chmod 600 "$COMPOSE_FILE"
 }
 deployment_settings() {
@@ -121,11 +121,12 @@ deployment_settings() {
 }
 port_busy() { [[ -n $(ss -H -ltn "sport = :$1") ]]; }
 free_port() {
-  local candidate
-  for ((candidate=8792; candidate<=8892; candidate++)); do
+  local candidate attempt
+  for ((attempt=0; attempt<200; attempt++)); do
+    candidate=$((20000 + RANDOM % 40000))
     if ! port_busy "$candidate"; then printf '%s' "$candidate"; return; fi
   done
-  die '8792–8892 均被占用，请指定其他端口。'
+  die '未找到空闲端口，请释放一个 20000–59999 TCP 端口后重试。'
 }
 settings_prompt() {
   local d e m p suggested
@@ -195,6 +196,8 @@ show_access() {
   fi
   if [[ "$MODE" == reverse-proxy ]]; then
     say "已有网站反向代理目标：http://127.0.0.1:$LOCAL_PORT（保留 Host，上传上限至少 128m）。"
+  elif [[ "$MODE" == tunnel ]]; then
+    say 'Cloudflare Tunnel 模式：无需占用本机 80/443，公网 HTTPS 验证结果见部署页面。'
   elif [[ "$MODE" == standalone ]]; then
     say '自动证书状态请查看证书日志。'
   fi
@@ -210,7 +213,13 @@ check_update() {
 install_app() {
   [[ ! -f "$ENV_FILE" ]] || die '已经安装，请使用 update 或 domain。'
   prerequisites
-  settings_prompt
+  local requested_domain password
+  DOMAIN= ACME_EMAIL=
+  read_domain
+  requested_domain=$NEW_DOMAIN
+  read -r -s -p '管理员密码（回车自动生成）：' password
+  printf '\n'
+  MODE=direct LOCAL_PORT=$(free_port)
   port_check
   resolve_source "${HETUN_REF:-main}"
   SOURCE_DIR=$RESOLVED_SOURCE REVISION=$RESOLVED_SHA
@@ -225,7 +234,18 @@ install_app() {
   up
   wait_health || { compose logs --tail=60 terminal; die '终端未健康启动，配置和数据已保留。可执行 sudo puffer-terminal start 重试。'; }
   install_menu
-  show_access
+  if [[ -n "$password" ]]; then
+    compose stop terminal </dev/null
+    if ! printf '%s' "$password" | compose run -T --rm --no-deps terminal node scripts/reset-admin.mjs --stdin; then
+      unset password
+      up </dev/null
+      die '安装完成，密码设置失败。请执行 sudo hetun reset-password 重试。'
+    fi
+    unset password
+    up </dev/null
+    wait_health || die '密码已设置，但服务尚未健康，请查看日志。'
+  else show_credentials; fi
+  if [[ -n "$requested_domain" ]]; then bind_tunnel "$requested_domain"; else show_access; fi
 }
 backup_app() {
   load_config
@@ -233,7 +253,7 @@ backup_app() {
   local archive resume=0
   archive=$BACKUP_DIR/puffer-$(date -u +%Y%m%dT%H%M%S)-$$.tar.gz
   # 停止本项目服务使 JSON、密钥、文件和证书处于一致快照。
-  if [[ -n $(compose ps -q --status running) ]]; then resume=1; compose --profile tls stop; fi
+  if [[ -n $(compose ps -q --status running) ]]; then resume=1; compose --profile tls --profile tunnel stop; fi
   if ! tar -czf "$archive" -C / etc/puffer-terminal var/lib/puffer-terminal; then
     [[ $resume == 1 ]] && up
     die '备份失败，未执行升级。'
@@ -289,7 +309,7 @@ restore_app() {
   [[ -f "$staging/etc/puffer-terminal/terminal.env" && -f "$staging/var/lib/puffer-terminal/state/data.json" && -f "$staging/var/lib/puffer-terminal/state/keys/private.pem" ]] || die '备份缺少关键数据。'
   backup_app
   prior_mode=$MODE
-  compose --profile tls down
+  compose --profile tls --profile tunnel down
   mv "$CONFIG_DIR" "$CONFIG_DIR.pre-restore.$(date +%s)"
   mv "$DATA_BASE" "$DATA_BASE.pre-restore.$(date +%s)"
   mv "$staging/etc/puffer-terminal" "$CONFIG_DIR"
@@ -308,7 +328,86 @@ restore_app() {
   rm -rf -- "$staging"
   say '恢复成功，之前的配置与数据目录仍保留，可人工复核后删除。'
 }
+validate_domain() {
+  [[ -z "$1" || ( ${#1} -le 253 && "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$ ) ]] || die '请输入域名，不要包含协议、端口或路径。'
+}
+read_domain() {
+  read -r -p "域名（留空用 IP，输入 - 清除）[${DOMAIN:-}]：" NEW_DOMAIN
+  NEW_DOMAIN=${NEW_DOMAIN:-${DOMAIN:-}}
+  [[ "$NEW_DOMAIN" != - ]] || NEW_DOMAIN=
+  NEW_DOMAIN=${NEW_DOMAIN,,}
+  validate_domain "$NEW_DOMAIN"
+}
+restore_domain_config() {
+  local previous=$CONFIG_DIR/.domain-rollback
+  if [[ -d "$previous" ]]; then
+    cp "$previous/terminal.env" "$ENV_FILE"
+    cp "$previous/compose.yaml" "$COMPOSE_FILE"
+    if [[ -f "$previous/tunnel-token" ]]; then cp "$previous/tunnel-token" "$STATE_DIR/deployment/tunnel-token"; chown 1000:1000 "$STATE_DIR/deployment/tunnel-token"; else rm -f -- "$STATE_DIR/deployment/tunnel-token"; fi
+    load_config
+    up </dev/null
+    wait_health || die '原配置已恢复，但服务尚未健康，请查看日志。'
+    rm -rf -- "$previous"
+  fi
+}
+tunnel_rollback() {
+  load_config
+  local token
+  read -r -s -p 'Cloudflare API 令牌：' token
+  printf '\n'
+  printf '%s' "$token" | compose run -T --rm --no-deps terminal node scripts/bind-cloudflare.mjs rollback
+  unset token
+  restore_domain_config
+}
+bind_tunnel() {
+  local domain=$1 token previous=$CONFIG_DIR/.domain-rollback
+  say '自动绑定 Cloudflare 域名：需要 Tunnel 编辑、Zone 读取、DNS 编辑权限。将替换此域名的 A/AAAA/CNAME 记录，失败会回滚。'
+  read -r -s -p 'Cloudflare API 令牌（不保存）：' token
+  printf '\n'
+  [[ -n "$token" ]] || die '未输入令牌，当前部署保持可用。'
+  [[ ! -d "$previous" ]] || die '有未完成的域名操作，请先执行 sudo hetun tunnel-rollback。'
+  install -d -m 0700 "$previous"
+  cp "$ENV_FILE" "$COMPOSE_FILE" "$previous/"
+  [[ ! -f "$STATE_DIR/deployment/tunnel-token" ]] || cp "$STATE_DIR/deployment/tunnel-token" "$previous/"
+  if ! printf '%s' "$token" | compose run -T --rm --no-deps terminal node scripts/bind-cloudflare.mjs prepare "$domain"; then
+    unset token
+    if [[ -f "$STATE_DIR/deployment/pending.json" ]]; then die '域名准备未完成，请执行 sudo hetun tunnel-rollback。'; fi
+    restore_domain_config
+    die '域名准备失败，原配置已恢复。'
+  fi
+  DOMAIN=$domain MODE=tunnel ACME_EMAIL=
+  if write_config && up </dev/null && wait_health && compose exec -T terminal node scripts/bind-cloudflare.mjs verify "$domain"; then
+    unset token
+    rm -rf -- "$previous"
+    install_menu
+    show_access
+    return
+  fi
+  say '公网 HTTPS 核验失败，正在回滚 DNS 和本地部署。'
+  compose --profile tunnel stop tunnel </dev/null || true
+  if ! printf '%s' "$token" | compose run -T --rm --no-deps terminal node scripts/bind-cloudflare.mjs rollback; then
+    unset token
+    restore_domain_config
+    die '本地已回退；Cloudflare 回滚待重试：sudo hetun tunnel-rollback。'
+  fi
+  unset token
+  restore_domain_config
+  die '域名核验失败，已恢复原部署。'
+}
 change_domain() {
+  load_config
+  read_domain
+  if [[ -n "$NEW_DOMAIN" ]]; then backup_app; bind_tunnel "$NEW_DOMAIN"; else
+    backup_app
+    DOMAIN= MODE=direct ACME_EMAIL=
+    write_config
+    up
+    wait_health || die 'IP 访问模式未正常启动，请查看日志。'
+    show_access
+  fi
+}
+
+advanced_domain() {
   load_config
   local old_config new_domain new_email new_mode new_port
   settings_prompt
@@ -316,7 +415,7 @@ change_domain() {
   backup_app
   old_config=$(mktemp -d "$CONFIG_DIR/.domain.XXXXXX")
   cp "$ENV_FILE" "$COMPOSE_FILE" "$old_config/"
-  compose --profile tls down
+  compose --profile tls --profile tunnel down
   DOMAIN=$new_domain ACME_EMAIL=$new_email MODE=$new_mode LOCAL_PORT=$new_port
   if (port_check); then
     write_config
@@ -335,7 +434,7 @@ show_credentials() {
   if [[ -s "$STATE_DIR/bootstrap-admin.txt" ]]; then
     cat "$STATE_DIR/bootstrap-admin.txt"
   else
-    printf '初始密码已在首次改密后删除，无法读取当前密码。\n忘记密码请选择菜单 9，或执行 sudo hetun reset-password。\n'
+    printf '初始密码已在首次改密后删除，无法读取当前密码。\n忘记密码请选择菜单 3 → 2，或执行 sudo hetun reset-password。\n'
   fi
 }
 reset_password() {
@@ -352,7 +451,7 @@ reset_password() {
   read -r -p '确认修改并清除所有登录会话？输入 y 确认，其他取消：' answer || return 1
   [[ "$answer" == y || "$answer" == Y ]] || { say '已取消，密码未修改。'; return; }
   say '正在修改密码并重启服务，请稍候……'
-  compose --profile tls stop terminal </dev/null
+  compose --profile tls --profile tunnel stop terminal </dev/null
   if printf '%s' "$password" | compose run -T --rm --no-deps terminal node scripts/reset-admin.mjs --stdin; then
     unset password confirm
     up </dev/null
@@ -371,59 +470,67 @@ uninstall_app() {
   read -r -p '输入 UNINSTALL 确认卸载河豚终端容器（保留数据与源码，不删除 Docker）：' answer
   [[ "$answer" == UNINSTALL ]] || return
   backup_app
-  compose --profile tls down
+  compose --profile tls --profile tunnel down
   say "容器已卸载，数据保留：$DATA_BASE；源码：$APP_BASE；再次运行 puffer-terminal start 恢复。"
 }
-menu() {
-  local choice action
+menu_header() {
+  printf '\n  河豚终端 v%s\n  ────────────────────────────────────\n' "$MENU_VERSION"
+  if [[ -f "$ENV_FILE" ]]; then
+    load_config
+    if curl -fsS --max-time 2 "http://127.0.0.1:$LOCAL_PORT/healthz" >/dev/null; then printf '  状态：运行正常\n'; else printf '  状态：未启动或正在启动\n'; fi
+    if [[ "$MODE" == direct ]]; then printf '  地址：http://%s:%s\n' "${DOMAIN:-服务器公网IP}" "$LOCAL_PORT"; else printf '  地址：https://%s\n' "$DOMAIN"; fi
+  else printf '  状态：尚未安装\n'; fi
+}
+run_menu_action() {
+  trap ':' INT
+  if bash "${BASH_SOURCE[0]}" "$1"; then printf '\n操作结束。\n'; else printf '\n操作未完成，请查看上方提示。\n'; fi
+  trap - INT
+  read -r -p '按回车返回：' || return
+}
+account_menu() {
+  local choice
   while true; do
-    printf '\n==================================================\n  河豚终端 | Linux 管理中心 | 菜单 v%s\n==================================================\n' "$MENU_VERSION"
-    if [[ -f "$ENV_FILE" ]]; then
-      load_config
-      printf '  安装版本：%s  提交：%.12s\n' "$(sed -n 's/.*"version": "\([^" ]*\)".*/\1/p' "$SOURCE_DIR/package.json" | head -n 1)" "$REVISION"
-      compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' </dev/null || true
-      if [[ "$MODE" == direct ]]; then
-        local menu_address
-        menu_address=${DOMAIN:-$(hostname -I 2>/dev/null | awk '{print $1}')}
-        printf '  后台：http://%s:%s\n' "${menu_address:-服务器IP}" "$LOCAL_PORT"
-      else
-        printf '  后台：https://%s\n' "$DOMAIN"
-      fi
-    else
-      printf '  状态：尚未安装\n'
-    fi
-    printf '\n  部署与更新\n   1. 安装与环境准备\n   4. 更新终端\n  14. 检查更新\n\n  服务管理\n   2. 状态与访问地址\n   3. 服务日志（Ctrl+C 返回）\n  10. 启动服务\n  11. 停止服务\n  15. 重启服务\n\n  账号与配置\n   7. 修改域名 / 部署模式\n   8. 查看初始账号和密码\n   9. 修改 / 重置管理员密码\n  12. 证书日志\n\n  数据维护\n   5. 备份\n   6. 恢复备份\n  13. 卸载（保留数据）\n\n   0. 退出\n--------------------------------------------------\n'
-    read -r -p '请输入编号并回车：' choice || return
-    case "$choice" in
-      1) action=install ;; 2) action=status ;; 3) action=logs ;; 4) action=update ;;
-      5) action=backup ;; 6) action=restore ;; 7) action=domain ;; 8) action=credentials ;;
-      9) action=reset-password ;; 10) action=start ;; 11) action=stop ;;
-      12) action=certificates ;; 13) action=uninstall ;; 14) action=check ;; 15) action=restart ;;
-      0) return ;; *) say '编号无效，请按菜单选择。'; continue ;;
-    esac
-    # 独立 Bash 执行，失败不会关闭菜单，也不会关闭子命令的 errexit。
-    trap ':' INT
-    if bash "${BASH_SOURCE[0]}" "$action"; then
-      printf '\n操作结束。\n'
-    else
-      printf '\n操作未完成，请查看上方提示。\n'
-    fi
-    trap - INT
-    read -r -p '按回车返回菜单：' || return
+    printf '\n  账号管理\n  1 查看初始账号  2 修改密码  0 返回\n'
+    read -r -p '请选择：' choice || return
+    case "$choice" in 1) run_menu_action credentials;; 2) run_menu_action reset-password;; 0) return;; *) say '请选择 1、2 或 0。';; esac
   done
 }
+advanced_menu() {
+  local choice action
+  while true; do
+    printf '\n  更多管理\n  1 状态详情    2 服务日志    3 重启\n  4 备份        5 恢复备份    6 检查更新\n  7 启动        8 停止        9 卸载保留数据\n 10 高级域名   11 证书日志   12 Tunnel 日志\n 13 域名回滚    0 返回\n'
+    read -r -p '请选择：' choice || return
+    case "$choice" in
+      1) action=status;; 2) action=logs;; 3) action=restart;; 4) action=backup;; 5) action=restore;; 6) action=check;;
+      7) action=start;; 8) action=stop;; 9) action=uninstall;; 10) action=advanced-domain;; 11) action=certificates;; 12) action=tunnel-logs;; 13) action=tunnel-rollback;; 0) return;; *) say '编号无效。';continue;;
+    esac
+    run_menu_action "$action"
+  done
+}
+menu() {
+  local choice
+  while true; do
+    menu_header
+    printf '\n  1 安装 / 更新\n  2 绑定 / 修改域名\n  3 查看账号 / 修改密码\n  4 更多管理\n  0 退出\n\n'
+    read -r -p '请选择：' choice || return
+    case "$choice" in 1) run_menu_action deploy;; 2) run_menu_action domain;; 3) account_menu;; 4) advanced_menu;; 0) return;; *) say '请选择 0–4。';; esac
+  done
+}
+
 main() {
   require_root
   case ${1:-menu} in
     deploy) if [[ -f "$ENV_FILE" ]]; then update_app; else install_app; fi ;;
-    install) install_app ;; menu) menu ;; status) load_config; compose --profile tls ps; show_access ;;
+    install) install_app ;; menu) menu ;; status) load_config; compose --profile tls --profile tunnel ps; show_access ;;
     check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
+    advanced-domain) advanced_domain ;; tunnel-rollback) tunnel_rollback ;;
+    tunnel-logs) load_config; compose --profile tunnel logs --tail=100 tunnel ;;
     credentials) show_credentials ;; reset-password) reset_password ;;
-    start) start_app ;; stop) load_config; compose --profile tls stop ;;
+    start) start_app ;; stop) load_config; compose --profile tls --profile tunnel stop ;;
     certificates) load_config; compose --profile tls logs --tail=100 proxy ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
-    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall]' ;;
+    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|tunnel-rollback|tunnel-logs]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
   esac
 }

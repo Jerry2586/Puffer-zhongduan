@@ -10,15 +10,16 @@ ss() {
     *) return 0 ;;
   esac
 }
-[[ $(free_port) == 8793 ]]
+candidate=$(free_port)
+[[ "$candidate" -ge 20000 && "$candidate" -le 59999 ]]
 settings_prompt <<<'
 '
-[[ "$DOMAIN" == '' && "$MODE" == direct && "$LOCAL_PORT" == 8793 && "$BIND_ADDRESS" == 0.0.0.0 && "$DIRECT_HTTP" == true && "$PUBLIC_ORIGIN" == '' ]]
+[[ "$DOMAIN" == '' && "$MODE" == direct && "$LOCAL_PORT" -ge 20000 && "$BIND_ADDRESS" == 0.0.0.0 && "$DIRECT_HTTP" == true && "$PUBLIC_ORIGIN" == '' ]]
 unset DOMAIN ACME_EMAIL LOCAL_PORT
 settings_prompt <<<'sq.appgog.com
 
 '
-[[ "$MODE" == reverse-proxy && "$LOCAL_PORT" == 8793 && "$BIND_ADDRESS" == 127.0.0.1 && "$PUBLIC_ORIGIN" == https://sq.appgog.com ]]
+[[ "$MODE" == reverse-proxy && "$LOCAL_PORT" -ge 20000 && "$BIND_ADDRESS" == 127.0.0.1 && "$PUBLIC_ORIGIN" == https://sq.appgog.com ]]
 settings_prompt <<<'-
 '
 [[ "$DOMAIN" == '' && "$MODE" == direct ]]

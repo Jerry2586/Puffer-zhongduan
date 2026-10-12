@@ -75,3 +75,27 @@ test('HTTPS 代理登录继续使用配置域名，拒绝伪造转发头',async 
   assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{Host:'terminal:8792',Origin:canonical})).status,200);
   assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{Host:'terminal:8792',Origin:'https://evil.example','X-Forwarded-Host':'evil.example','X-Forwarded-Proto':'https'})).status,403);
 });
+
+test('产品对接读取真实绑定与发布记录，不假报客户端已接入',async t=>{
+  const x=await setup(t);
+  let r=await x.call('/api/integrations');assert.equal(r.status,200);assert.equal(r.value.signatureValid,true);assert.equal(r.value.emptyTarget,true);assert.equal(r.value.deployment,null);assert.ok(r.value.products.every(p=>p.bindings===0&&p.lastSeenAt===null));
+  const c=await x.customer(),l=await x.issue(c.id);assert.equal((await x.activate(l.key)).status,200);
+  r=await x.call('/api/integrations');assert.equal(r.value.products.find(p=>p.product==='packer').bindings,1);assert.equal(r.value.emptyTarget,false);
+});
+test('加密迁移：先预检，确认后保留授权签名和真实文件，旧会话退出，重启不丢失',async t=>{
+  const x=await setup(t),y=await setup(t);
+  const c=await x.customer('迁移客户'),l=await x.issue(c.id);const activated=await x.activate(l.key);assert.equal(activated.status,200);
+  const uploaded=await x.upload('theme','1.0.0',themeZip);assert.equal(uploaded.status,201);await x.publish(uploaded.value.id);
+  assert.equal((await x.call('/api/migration/export','POST',{current:'wrong',passphrase:'迁移密码'})).status,403);
+  const bundle=await x.call('/api/migration/export','POST',{current:'test-secure-password-2026',passphrase:'迁移密码'});assert.equal(bundle.status,200);assert.equal(bundle.bytes.subarray(0,8).toString(),'HETUNM01');assert.equal(bundle.bytes.includes(Buffer.from('PRIVATE KEY')),false);
+  const headers={'Content-Type':'application/octet-stream','X-Migration-Passphrase':Buffer.from('迁移密码').toString('base64')};
+  const oldKey=y.app.store.publicKey;
+  assert.equal((await y.call('/api/migration/import','POST',bundle.bytes,{...headers,'X-Migration-Passphrase':Buffer.from('wrong').toString('base64')})).status,400);
+  const damaged=Buffer.from(bundle.bytes);damaged[damaged.length-1]^=1;assert.equal((await y.call('/api/migration/import','POST',damaged,headers)).status,400);assert.equal(y.app.store.publicKey,oldKey);
+  const preview=await y.call('/api/migration/import','POST',bundle.bytes,headers);assert.equal(preview.status,200);assert.equal(preview.value.preview.files,1);assert.equal(y.app.store.state.customers.length,0);
+  const imported=await y.call('/api/migration/import?confirm='+preview.value.preview.keyId,'POST',bundle.bytes,headers);assert.equal(imported.status,200);assert.equal(imported.value.relogin,true);assert.equal(y.app.store.publicKey,x.app.store.publicKey);assert.equal(y.app.store.state.licenses[0].keyHash,x.app.store.state.licenses[0].keyHash);assert.equal((await y.call('/api/overview')).status,401);
+  const release=y.app.store.state.releases[0];assert.deepEqual(await fs.readFile(path.join(y.root,'files',release.file)),themeZip);
+  assert.equal((await y.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'})).status,200);
+  assert.equal((await x.call('/api/migration/import','POST',bundle.bytes,headers)).status,409);
+  await y.restart();assert.equal(y.app.store.publicKey,x.app.store.publicKey);assert.equal(y.app.store.state.customers[0].name,'迁移客户');assert.equal((await y.activate(l.key,'packer','test-device-001')).status,200);
+});

@@ -22,6 +22,8 @@ chown 1000:1000 "$STATE_DIR"
 write_config
 compose config -q
 compose --profile tls config -q
+compose --profile tunnel config -q
+docker run --rm cloudflare/cloudflared:2026.9.1 tunnel run --help | grep -q -- '--token-file'
 compose build --pull terminal
 up
 wait_health
@@ -36,7 +38,7 @@ compose stop terminal
 start_app
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
 # 错误域名必须在停止服务之前被拒绝。
-if printf 'bad/domain\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" domain; then echo '错误域名未被拒绝' >&2; exit 1; fi
+if printf 'bad/domain\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" advanced-domain; then echo '错误域名未被拒绝' >&2; exit 1; fi
 wait_health
 archive_to_restore=$LAST_BACKUP
 # 从另一个文件名恢复，核验备份可以迁移位置。
@@ -46,7 +48,7 @@ printf '%s\nRESTORE\n' "$BACKUP_DIR/portable.tar.gz" | bash "$SOURCE_DIR/scripts
 wait_health
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
 # 从共存模式切换到无域名模式，确认公网端口映射、真实 HTTP 和数据保留。
-printf '%s\n' '-' '8793' | bash "$SOURCE_DIR/scripts/linux-menu.sh" domain
+printf '%s\n' '-' '8793' | bash "$SOURCE_DIR/scripts/linux-menu.sh" advanced-domain
 load_config
 [[ "$MODE" == direct && "$DOMAIN" == '' && "$BIND_ADDRESS" == 0.0.0.0 && "$PUBLIC_ORIGIN" == '' ]]
 wait_health
@@ -60,19 +62,19 @@ printf '\ny\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" reset-password
 wait_health
 [[ -s "$STATE_DIR/bootstrap-admin.txt" ]]
 bash "$SOURCE_DIR/scripts/linux-menu.sh" credentials >/dev/null
-printf '9\n1\n1\ny\n\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-reset-test.txt" 2>&1
+printf '3\n2\n1\n1\ny\n\n0\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-reset-test.txt" 2>&1
 grep -q '密码修改成功' "$BACKUP_DIR/menu-reset-test.txt"
 wait_health
 [[ ! -e "$STATE_DIR/bootstrap-admin.txt" ]]
 bash "$SOURCE_DIR/scripts/linux-menu.sh" credentials | grep -q '无法读取当前密码'
 curl -fsS -H "Origin: http://127.0.0.1:$LOCAL_PORT" -H 'Content-Type: application/json' -d '{"username":"admin","password":"1"}' "http://127.0.0.1:$LOCAL_PORT/api/login" | grep -q '"mustChange":false'
-printf '8\n\n9\nMismatch-password-1\nMismatch-password-2\n\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-test.txt" 2>&1
+printf '3\n1\n\n2\nMismatch-password-1\nMismatch-password-2\n\n0\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-test.txt" 2>&1
 grep -q '无法读取当前密码' "$BACKUP_DIR/menu-test.txt"
 grep -q '两次密码不一致' "$BACKUP_DIR/menu-test.txt"
 grep -q '操作未完成' "$BACKUP_DIR/menu-test.txt"
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
 # 配置域名后，直连 IP 仍可实际登录，域名请求也通过，跨站仍被拒绝。
-printf '%s\n' 'sq.example.test' '3' "$LOCAL_PORT" | bash "$SOURCE_DIR/scripts/linux-menu.sh" domain
+printf '%s\n' 'sq.example.test' '3' "$LOCAL_PORT" | bash "$SOURCE_DIR/scripts/linux-menu.sh" advanced-domain
 load_config
 wait_health
 for address in "127.0.0.1:$LOCAL_PORT" "sq.example.test:$LOCAL_PORT"; do

@@ -1,72 +1,73 @@
-# Linux 安装与维护
+# Linux 安装与迁移
 
-## 一行启动
+## 一行安装
+
+以 root 或 sudo 执行，先确保有 curl，服务器需要能够访问 GitHub 与容器仓库。
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/install | sudo bash
 ~~~
 
-同一入口首次运行部署，已有安装时更新。域名可以留空，直接回车进入 IP 加端口模式，再确认自动推荐的空闲端口。填写域名后选择自动 HTTPS、已有代理共存或域名加端口直连；只有自动 HTTPS 询问证书邮箱。管道入口从 `/dev/tty` 读取选择，SSH 中可以正常交互。需要 root/sudo、curl、tar，以及到 GitHub、Docker 软件源和容器仓库的网络。自动准备 Docker 支持 Debian/Ubuntu 和使用 dnf/systemd 的 RPM 9/10 系列；其他发行版先准备 Docker Engine、Compose v2、curl、tar、ss。已有 Docker 会复用；缺少 Compose 或 Docker 未运行会明确提示处理。
+安装只询问可选域名和管理员密码。域名留空使用 IP；密码留空生成随机密码。自动选取 20000–59999 的空闲端口并持久保存，更新沿用该端口。IP 访问需要安全组放行显示的 TCP 端口。云服务器请使用实际公网 IP，网卡地址不一定是公网地址。
 
-安装独立 Compose 项目 puffer-terminal，不删除或停止其他服务。默认从 8792–8892 推荐第一个空闲端口；发现 80/443 占用时推荐共存模式。手动指定的端口若被占用会拒绝安装。没有承诺所有发行版、网络、代理、SELinux 或端口条件都自动适配。
+支持自动准备 Debian/Ubuntu、RPM 9/10 系列环境；其他发行版请先安装 Docker Engine 和 Compose 插件。复用已有 Docker，环境、配置、运行数据与源码分离。
 
-## 域名可选与访问方式
-
-**无域名直连**：域名留空，终端监听 `0.0.0.0:<空闲端口>`，使用 `http://服务器公网IP:端口`。不需要邮箱、DNS 或 80/443。服务器安全组须放行所选 TCP 端口；菜单显示的是服务器网卡地址，NAT/云服务器应使用实际公网 IP。HTTP 不加密传输，之后可以在菜单绑定域名切换 HTTPS。管理员请求仍校验同源 Origin 与 CSRF，无域名模式只接受 IP/localhost 主机名，签名凭据、更新清单及下载地址使用实际访问来源。
-
-**域名加端口直连**：填写域名选择模式 3，使用 `http://域名:端口`，无需申请证书。
-
-## 域名与证书
-
-**独立模式**：绑定域名，Caddy 自动申请和续期证书。域名 A/AAAA 应正确解析到服务器，公网 80/TCP、443/TCP 能到达此服务器，且未被其他服务占用。443/UDP 用于 HTTP/3。配置验证通过不表示公网证书已签发，查看证书日志确认。
-
-**共存模式**：已有宝塔/Nginx/代理继续负责域名证书，终端仅监听 127.0.0.1:8792（可改）。反向代理到该地址，保留 Host，请求上传上限至少 128m。HTTPS 外部地址须与安装时域名一致。推荐新子域名，无须放到苹果 CMS 的网站目录。
-
-## 进入菜单
+## 四项管理菜单
 
 ~~~bash
 sudo hetun
+sudo hetun deploy
+sudo hetun update
+sudo hetun domain
+sudo hetun credentials
+sudo hetun reset-password
 ~~~
 
-菜单顶部显示安装版本、提交、容器状态及访问地址。菜单包含安装、状态与地址、日志、更新、检查更新、重启、备份、恢复、修改域名/模式、初始账号、重置密码、启动、停止、证书日志、卸载。旧命令 `puffer-terminal` 保留。修改域名时输入 `-` 可清除域名并切回 IP 直连。
+主菜单：1 安装/更新，2 绑定/修改域名，3 账号/密码，4 更多管理，0 退出。
+账号子菜单：1 查看初始凭据，2 重置密码。首次改密后初始明文文件被删除，可以使用重置密码设置新密码。密码输入两遍，可自行设置长度，直接回车生成随机密码；确认后短暂停止并重启服务，旧登录会话失效。
+更多管理提供状态、日志、重启、备份、恢复、检查更新、启停、卸载、高级域名模式、证书日志、Tunnel 日志和绑定回滚。每次操作完成按回车返回。旧命令 puffer-terminal 保留。
 
-`sudo hetun deploy`：未安装则部署，已安装则更新；`sudo hetun update`：拉取仓库版本、备份、构建 Docker 容器并重启，启动失败回退。这些短命令调用 Docker Compose，无需手动输入 Compose 文件路径。首次入口 URL 使用真实 GitHub 地址；尚未配置短域名，不提供虚构的短网址。
+## 域名自动 HTTPS
 
-~~~bash
-sudo puffer-terminal credentials
-sudo puffer-terminal status
-sudo puffer-terminal update
-sudo puffer-terminal backup
-sudo puffer-terminal restore
-sudo puffer-terminal domain
-sudo puffer-terminal reset-password
-~~~
+默认使用 Cloudflare Tunnel，不占用服务器 80/443，不需要改已有网站。域名必须在 Cloudflare 的活动 DNS 区域中。输入域名后，工具读取一次 API Token，创建 Tunnel 和指定域名 DNS，并等待公网 HTTPS 返回本终端的公钥与身份。只有身份验证通过才报告绑定成功；失败回滚本地配置和本次远端变更。
 
-首次账号 admin，随机密码通过 credentials 查看。登录必须修改；修改后初始明文文件删除。菜单 9 或 sudo hetun reset-password 可输入两遍自定义密码（长度自行决定），直接回车则生成随机密码；输入 y 确认后短暂停止并重启终端，旧登录会话失效。菜单 8 查看初始凭据；首次改密后初始密码已删除，会提示使用菜单 9 重置。每次操作结束后按回车返回菜单。不要把密码或私钥上传到仓库。
+API Token 需要目标账号的 Cloudflare Tunnel 编辑、目标区域的 Zone 读取和 DNS 编辑权限。工具只修改输入域名的 A/AAAA/CNAME，绑定将替换这些记录。令牌不写入磁盘和日志。Tunnel 的运行连接令牌仍须私密保存，位于外部 state/deployment 目录。服务器需要访问 Cloudflare API，并允许 Tunnel 出站连接（7844 TCP/UDP，HTTPS 443）。只输入域名无法绕过域名管理权限和网络条件。
 
-## 文件分离
+公网验证是绑定时的检查结果，页面展示检查时间，不代表持续在线监控。成功更换域名时旧 Tunnel 资源不会自动删除，可在 Cloudflare 核对后自行清理。输入 - 可以清除当前域名，切回 IP 直连；远端旧资源保留。
+
+高级部署通过更多管理或 sudo hetun advanced-domain 进入：独立 Caddy 自动 HTTPS 要求正确 DNS、公网 80/443 可用；已有宝塔/Nginx 共存模式由现有站点提供证书和代理；域名加端口直连为 HTTP。代理应保留 Host，上传上限至少 128m，外部域名/协议须与终端配置一致。HTTP 直连不加密网络传输。
+
+## 产品对接与页面迁移
+
+产品对接页提供授权地址、公钥、协议和配置下载，统计来自实际绑定记录、最近联网时间及已发布的软件版本。当前只交付终端侧接口，三个客户端尚未接入时不会显示已对接。
+
+部署与迁移页可以导出加密 .hetun 包：确认当前管理员密码，设置独立迁移口令。包包含客户、授权、绑定、版本、文件、管理员密码哈希和签名密钥。迁移口令不保存在终端，需自行妥善保管。
+
+新服务器安装后登录，选择导入迁移包并填写口令。先预览数量与签名身份，确认后导入。目标必须没有客户、授权、绑定、版本、构建任务或节点等业务记录；导入会替换目标管理员和签名身份，完成后使用原服务器账号重新登录。排队和执行中的构建任务转为取消，历史产物保留。旧离线凭据的签名身份保持有效。
+
+页面迁移最多包含 64 MB 引用文件，超限请使用 Linux 完整备份方式。迁移包不携带服务器域名、端口或 Cloudflare 令牌，新服务器需重新绑定域名。迁移操作没有自动切换 DNS，正式切换前应验证新服务器。
+
+## 文件分离与完整备份
 
 | 路径 | 内容 |
 |---|---|
-| /opt/puffer-terminal/releases/<commit> | 只读版本源码 |
-| /etc/puffer-terminal | 部署配置，root 私有 |
-| /var/lib/puffer-terminal/state | 授权、密码哈希、签名密钥、版本文件 |
-| /var/lib/puffer-terminal/caddy | 自动证书持久化 |
+| /opt/puffer-terminal/releases/<commit> | 版本源码 |
+| /etc/puffer-terminal | root 私有部署配置 |
+| /var/lib/puffer-terminal/state | 业务数据、密码哈希、密钥、版本文件及 Tunnel 连接令牌 |
+| /var/lib/puffer-terminal/caddy | 高级独立模式证书 |
 | /var/backups/puffer-terminal | 完整备份和 SHA-256 |
-| /usr/local/bin/puffer-terminal | 管理菜单 |
-
-更新拉取 main 的具体提交，备份后构建再启动。启动失败回退之前程序和配置；数据迁移不兼容时需要用备份恢复。备份短暂停止本项目，确保 JSON、文件和密钥一致，然后恢复运行。恢复要输入备份绝对路径以及 RESTORE；恢复前另外备份，并保留旧配置/数据目录。
+| /usr/local/bin/hetun | 管理菜单入口 |
 
 ~~~bash
-sudo env HETUN_REF=<完整提交SHA或标签> puffer-terminal update
+sudo hetun backup
+sudo hetun restore
+sudo env HETUN_REF=<完整提交SHA或标签> hetun update
 ~~~
 
-卸载输入 UNINSTALL：移除本项目容器，保留源代码、状态和备份，也不删除 Docker。以后用 sudo puffer-terminal start 重新启动。
+更新拉取 main 的具体提交，先备份再构建启动，启动失败回退程序和配置。备份短暂停止本项目确保数据一致。恢复需要备份绝对路径及 RESTORE，恢复前另做备份并保留旧目录。完整 Linux 备份包含部署配置和令牌，跨服务器恢复后须重新核对并绑定域名、端口，不要同时运行相同 Tunnel 或泄露备份。
 
-## 故障排查
+卸载输入 UNINSTALL，移除本项目容器并保留源码、状态及备份，不删除 Docker。可以使用 sudo hetun start 重新启动。
 
-先看 status、logs 和证书日志。安装未健康启动时保留配置，可用 start 重试；证书失败检查 DNS、A/AAAA、安全组和 80/443 连通性。反向代理 403 检查外部域名、Host 和 HTTPS 配置。备份恢复失败时旧目录保存在 .pre-restore.*；不要删除密钥，否则历史离线签名无法继续验证。
+## 验证范围
 
-CI 验收使用临时 Ubuntu runner，测试容器构建、非 root 用户、健康检查、重启保留密钥、备份/移动备份/恢复，以及 Caddy 配置。公网证书和 RPM 发行版自动环境安装需在实际服务器再验收。
-
-域名端口直连模式支持通过配置域名或服务器 IP 加端口登录。HTTPS 反向代理请通过菜单 7 选择共存模式并配置外部域名，浏览器访问协议和地址需要与配置一致。来源错误会显示应使用的地址；跨站请求仍拒绝。
+CI 在临时 Ubuntu 环境验证容器构建、非 root 用户、健康检查、重启身份持久化、备份恢复和高级 Caddy 配置。自动化用独立临时状态验证加密迁移与 Cloudflare 错误回滚；真实域名授权、Tunnel 公网连接和各发行版环境安装仍需对应服务器现场验证。

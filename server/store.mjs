@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { recoverMigration } from './migration.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
@@ -22,6 +23,7 @@ export async function atomic(file, value) {
   } catch (e) { await fs.unlink(temp).catch(() => {}); throw e; }
 }
 export async function openStore(root) {
+  await recoverMigration(root);
   for (const d of ['keys', 'files', 'logs']) await fs.mkdir(path.join(root, d), { recursive: true, mode: 0o700 });
   const file = path.join(root, 'data.json');
   let state;

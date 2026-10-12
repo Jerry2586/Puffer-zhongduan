@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { exportMigration, inspectMigration, importMigration, emptyTarget } from './migration.mjs';
 import { isIP } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -61,7 +62,7 @@ export async function createTerminal(options) {
   }
   function sameOrigin(req) {
     const expected = directHttp ? directRequestOrigin(req) : origin;
-    if (req.headers.origin !== expected) throw failure('请求来源不匹配，请使用 ' + expected + ' 访问；经过 HTTPS 代理时请在管理菜单 7 配置域名和共存模式', 403);
+    if (req.headers.origin !== expected) throw failure('请求来源不匹配，请使用 ' + expected + ' 访问；经过 HTTPS 代理时请在管理菜单 2 配置域名', 403);
   }
   function admin(req, write = false) {
     const s = session(req);
@@ -107,7 +108,7 @@ export async function createTerminal(options) {
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.3' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.0' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -130,7 +131,30 @@ export async function createTerminal(options) {
       readyAdmin(req, m !== 'GET');
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.3' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.0' });
+      }
+      if(r==='/api/integrations' && m==='GET') {
+        let deployment=null;
+        try{const status=JSON.parse(await fs.readFile(path.join(store.root,'deployment/status.json'),'utf8'));if(status.keyId===sha(store.publicKey).slice(0,16)&&externalOrigin==='https://'+status.domain&&status.verified===true)deployment={verified:true,domain:status.domain,checkedAt:status.checkedAt};}catch(e){if(e.code!=='ENOENT'&&!(e instanceof SyntaxError))throw e;}
+        const probe=Buffer.from('hetun-terminal-self-check');
+        const signature=crypto.sign(null,probe,store.privateKey);
+        return json(res,200,{deployment,origin:externalOrigin,keyId:sha(store.publicKey).slice(0,16),signatureValid:crypto.verify(null,probe,store.publicKey,signature),products:PRODUCTS.map(product=>({product,bindings:store.state.bindings.filter(b=>b.product===product).length,lastSeenAt:store.state.bindings.filter(b=>b.product===product).map(b=>b.lastSeenAt).filter(Boolean).sort().at(-1)||null,publishedVersions:store.state.releases.filter(v=>v.product===product&&v.kind==='software'&&v.status==='published').length})),endpoints:{publicKey:'/v1/license/public-key',activate:'/v1/license/activate',check:'/v1/license/check',updates:'/v1/updates'},emptyTarget:emptyTarget(store)});
+      }
+      if(r==='/api/migration/export' && m==='POST') {
+        const b=await body(req);
+        if(typeof b.current!=='string'||!await checkPassword(b.current,store.admin))throw failure('当前管理员密码不正确',403);
+        const bytes=await exportMigration(store,b.passphrase,externalOrigin);
+        store.audit('导出加密迁移包',sha(store.publicKey).slice(0,16));await store.commit();
+        res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="puffer-migration.hetun"','Cache-Control':'no-store','Content-Length':bytes.length});return res.end(bytes);
+      }
+      if(r==='/api/migration/import' && m==='POST') {
+        if(!emptyTarget(store))throw failure('请在空白的新服务器导入，当前已有业务数据',409);
+        if(req.headers['content-type']!=='application/octet-stream')throw failure('需要迁移文件',415);
+        const password=Buffer.from(String(req.headers['x-migration-passphrase']||''),'base64').toString('utf8');
+        const inspected=await inspectMigration(await body(req,true),password);
+        if(u.searchParams.get('confirm')!==sha(inspected.value.publicKey).slice(0,16))return json(res,200,{preview:inspected.summary});
+        const summary=await importMigration(store,inspected);sessions.clear();res.setHeader('Set-Cookie',cookie('',0));
+        return json(res,200,{imported:summary,relogin:true});
       }
       if (r === '/api/customers' && m === 'POST') {
         const b = await body(req), name = String(b.name || '').trim(); if (!name || name.length > 80) throw failure('客户名称为 1–80 字');

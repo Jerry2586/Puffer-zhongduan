@@ -44,3 +44,21 @@ services:
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.9.1
+    profiles: [tunnel]
+    restart: unless-stopped
+    user: "1000:1000"
+    command: [tunnel, --no-autoupdate, run, --token-file, /run/hetun-token]
+    volumes:
+      - ${STATE_DIR:-/var/lib/puffer-terminal/state}/deployment/tunnel-token:/run/hetun-token:ro,Z
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      terminal:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
