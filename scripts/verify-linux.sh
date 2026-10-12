@@ -28,6 +28,9 @@ compose build --pull terminal
 up
 wait_health
 [[ $(compose exec -T terminal id -u) == 1000 ]]
+compose exec -T terminal node --check scripts/nginx-domain-plan.mjs
+compose exec -T terminal node --check scripts/diagnose-domain.mjs
+compose exec -T terminal node --check scripts/bind-cloudflare.mjs
 [[ -s "$STATE_DIR/bootstrap-admin.txt" && -s "$STATE_DIR/keys/private.pem" ]]
 curl -fsS "http://127.0.0.1:$LOCAL_PORT/" | grep -q '河豚终端'
 key_before=$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)

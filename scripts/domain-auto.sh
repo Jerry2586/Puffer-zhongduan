@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Loaded by linux-menu.sh after load_config. Only this domain's vhost is managed.
+# Nginx variables stay literal; ACME_EMAIL is consumed by the caller's write_config.
+# shellcheck disable=SC2016,SC2034
 nginx_detect() {
   local candidate
   for candidate in "$(command -v nginx || true)" /www/server/nginx/sbin/nginx /usr/sbin/nginx /usr/local/nginx/sbin/nginx; do
@@ -122,7 +124,7 @@ managed_domain_remove() {
 renew_certificate() (
   load_config
   local renewal_lock
-  exec {renewal_lock}>$CONFIG_DIR/domain-operation.lock
+  exec {renewal_lock}>"$CONFIG_DIR/domain-operation.lock"
   flock -n "$renewal_lock" || return 0
   managed_domain_read || return 1
   [[ -n "$MANAGED_CONF" ]] || return 0
@@ -145,7 +147,7 @@ domain_auto_rollback() {
   [[ ! -d "$domain_tx/domain" ]] || cp -a "$domain_tx/domain" "$CONFIG_DIR/domain"
   load_config
   if [[ -f "$CONFIG_DIR/domain/active" ]]; then domain_renew_install || true; else domain_renew_remove; fi
-  up </dev/null && wait_health || say '原服务恢复失败，请查看 sudo hetun logs。' >&2
+  if ! { up </dev/null && wait_health; }; then say '原服务恢复失败，请查看 sudo hetun logs。' >&2; fi
   rm -rf -- "$domain_tx"
 }
 bind_auto_domain() (
@@ -155,7 +157,7 @@ bind_auto_domain() (
   domain_paths=()
   validate_domain "$requested" || return 1
   [[ -n "$requested" ]] || return 1
-  exec {domain_lock}>$CONFIG_DIR/domain-operation.lock
+  exec {domain_lock}>"$CONFIG_DIR/domain-operation.lock"
   flock -n "$domain_lock" || { say '已有域名操作或证书续期正在执行，请稍后重试。'; return 1; }
   domain_tx=$(mktemp -d "$CONFIG_DIR/.auto-domain.XXXXXX") || return 1
   cp "$ENV_FILE" "$COMPOSE_FILE" "$domain_tx/" || { rm -rf -- "$domain_tx"; return 1; }
@@ -219,7 +221,7 @@ bind_auto_domain() (
 )
 managed_domain_suspend() {
   local suspend_lock
-  exec {suspend_lock}>$CONFIG_DIR/domain-operation.lock
+  exec {suspend_lock}>"$CONFIG_DIR/domain-operation.lock"
   flock -n "$suspend_lock" || { say '证书或域名操作正在执行，稍后重试。'; return 1; }
   managed_domain_read || return 1
   [[ -n "$MANAGED_CONF" ]] || return 0
@@ -235,9 +237,9 @@ managed_domain_resume() {
   managed_domain_read || return 1
   [[ -n "$MANAGED_CONF" ]] || return 0
   if [[ -f "$MANAGED_CONF" ]] && ! cmp -s "$MANAGED_CONF" "$CONFIG_DIR/domain/installed.conf"; then
-    [[ -f "$CONFIG_DIR/domain/original.conf" ]] && cmp -s "$MANAGED_CONF" "$CONFIG_DIR/domain/original.conf" || {
+    if [[ ! -f "$CONFIG_DIR/domain/original.conf" ]] || ! cmp -s "$MANAGED_CONF" "$CONFIG_DIR/domain/original.conf"; then
       say '站点被手动修改，终端已启动，但自动恢复域名已停止。'; return 1;
-    }
+    fi
   fi
   cp "$CONFIG_DIR/domain/installed.conf" "$MANAGED_CONF"
   nginx_apply || return 1
@@ -247,7 +249,7 @@ clear_auto_domain() (
   load_config
   clear_lock='' domain_tx=''
   domain_paths=()
-  exec {clear_lock}>$CONFIG_DIR/domain-operation.lock
+  exec {clear_lock}>"$CONFIG_DIR/domain-operation.lock"
   flock -n "$clear_lock" || return 1
   domain_tx=$(mktemp -d "$CONFIG_DIR/.auto-domain.XXXXXX")
   cp "$ENV_FILE" "$COMPOSE_FILE" "$domain_tx/"

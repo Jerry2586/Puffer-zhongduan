@@ -286,7 +286,7 @@ backup_app() {
   archive=$BACKUP_DIR/puffer-$(date -u +%Y%m%dT%H%M%S)-$$.tar.gz
   # 停止本项目服务使 JSON、密钥、文件和证书处于一致快照。
   if [[ -n $(compose ps -q --status running) ]]; then resume=1; compose --profile tls --profile tunnel stop; fi
-  if ! tar --dereference -czf "$archive" -C / etc/puffer-terminal var/lib/puffer-terminal; then
+  if ! tar --dereference --hard-dereference -czf "$archive" -C / etc/puffer-terminal var/lib/puffer-terminal; then
     [[ $resume == 1 ]] && up
     die '备份失败，未执行升级。'
   fi
@@ -451,6 +451,8 @@ advanced_domain() {
   load_config
   local old_config new_domain new_email new_mode new_port
   settings_prompt
+  # load_config above reloads values persisted by the isolated domain transaction.
+  # shellcheck disable=SC2031
   new_domain=$DOMAIN new_email=$ACME_EMAIL new_mode=$MODE new_port=$LOCAL_PORT
   backup_app
   old_config=$(mktemp -d "$CONFIG_DIR/.domain.XXXXXX")

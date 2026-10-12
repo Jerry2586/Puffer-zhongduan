@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Isolated control-flow checks; no real listeners, certificates or host sites touched.
+# Subshell results are intentionally persisted then explicitly reloaded from the fixture.
+# shellcheck disable=SC2031
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/linux-menu.sh
@@ -14,7 +16,10 @@ ENV_FILE=$CONFIG_DIR/terminal.env COMPOSE_FILE=$CONFIG_DIR/compose.yaml
 mkdir -p "$CONFIG_DIR" "$DATA_BASE" "$sandbox/sites"
 TARGET=$sandbox/sites/hetun.conf
 printf 'other website\n' >"$sandbox/sites/unrelated.conf"
-load_config() { source "$ENV_FILE"; }
+load_config() {
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+}
 write_config() { printf 'DOMAIN=%s\nMODE=%s\nLOCAL_PORT=34567\nACME_EMAIL=\n' "$DOMAIN" "$MODE" >"$ENV_FILE"; }
 reset_fixture() {
   rm -rf -- "$CONFIG_DIR/domain"
