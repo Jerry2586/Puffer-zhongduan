@@ -55,4 +55,20 @@ compose --profile tls config -q
 curl -fsS -H 'Host: 192.0.2.10:8793' "http://127.0.0.1:$LOCAL_PORT/" | grep -q '河豚终端'
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
 [[ -L /usr/local/bin/hetun ]]
+# 验证密码管理确实在容器中生效，且没有消费后续菜单输入。
+printf '\ny\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" reset-password
+wait_health
+[[ -s "$STATE_DIR/bootstrap-admin.txt" ]]
+bash "$SOURCE_DIR/scripts/linux-menu.sh" credentials >/dev/null
+printf '9\nCi-reset-password-2026!\nCi-reset-password-2026!\ny\n\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-reset-test.txt" 2>&1
+grep -q '密码修改成功' "$BACKUP_DIR/menu-reset-test.txt"
+wait_health
+[[ ! -e "$STATE_DIR/bootstrap-admin.txt" ]]
+bash "$SOURCE_DIR/scripts/linux-menu.sh" credentials | grep -q '无法读取当前密码'
+curl -fsS -H "Origin: http://127.0.0.1:$LOCAL_PORT" -H 'Content-Type: application/json' -d '{"username":"admin","password":"Ci-reset-password-2026!"}' "http://127.0.0.1:$LOCAL_PORT/api/login" | grep -q '"mustChange":false'
+printf '8\n\n9\nMismatch-password-1\nMismatch-password-2\n\n0\n' | bash "$SOURCE_DIR/scripts/linux-menu.sh" menu >"$BACKUP_DIR/menu-test.txt" 2>&1
+grep -q '无法读取当前密码' "$BACKUP_DIR/menu-test.txt"
+grep -q '两次密码不一致' "$BACKUP_DIR/menu-test.txt"
+grep -q '操作未完成' "$BACKUP_DIR/menu-test.txt"
+[[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
 echo 'Linux Docker / 无域名 IP访问 / 共存切换 / 非 root / 重启 / 备份恢复 / Caddy 配置验收通过'

@@ -42,7 +42,7 @@ sudo puffer-terminal domain
 sudo puffer-terminal reset-password
 ~~~
 
-首次账号 admin，随机密码通过 credentials 查看。登录必须修改；修改后初始明文文件删除。重置需要输入 RESET 并短暂停止终端。不要把密码或私钥上传到仓库。
+首次账号 admin，随机密码通过 credentials 查看。登录必须修改；修改后初始明文文件删除。菜单 9 或 sudo hetun reset-password 可输入两遍自定义密码（12–128 位），直接回车则生成随机密码；输入 y 确认后短暂停止并重启终端，旧登录会话失效。菜单 8 查看初始凭据；首次改密后初始密码已删除，会提示使用菜单 9 重置。每次操作结束后按回车返回菜单。不要把密码或私钥上传到仓库。
 
 ## 文件分离
 

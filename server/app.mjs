@@ -100,7 +100,7 @@ export async function createTerminal(options) {
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.1' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.2' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || b.password.length > 200 || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -123,7 +123,7 @@ export async function createTerminal(options) {
       readyAdmin(req, m !== 'GET');
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.1' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.2' });
       }
       if (r === '/api/customers' && m === 'POST') {
         const b = await body(req), name = String(b.name || '').trim(); if (!name || name.length > 80) throw failure('客户名称为 1–80 字');

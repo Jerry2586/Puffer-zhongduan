@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.1.1
+MENU_VERSION=0.1.2
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -177,7 +177,10 @@ start_app() {
   show_access
 }
 install_menu() {
-  install -m 0755 "$SOURCE_DIR/scripts/linux-menu.sh" /usr/local/bin/puffer-terminal
+  local menu_file
+  menu_file=$(mktemp /usr/local/bin/.puffer-terminal.XXXXXX)
+  install -m 0755 "$SOURCE_DIR/scripts/linux-menu.sh" "$menu_file"
+  mv -f "$menu_file" /usr/local/bin/puffer-terminal
   ln -sfn /usr/local/bin/puffer-terminal /usr/local/bin/hetun
 }
 show_access() {
@@ -326,13 +329,42 @@ change_domain() {
   rm -rf -- "$old_config"
   die '域名切换失败，已恢复原配置。'
 }
+show_credentials() {
+  load_config
+  printf '\n管理员账号：admin\n'
+  if [[ -s "$STATE_DIR/bootstrap-admin.txt" ]]; then
+    cat "$STATE_DIR/bootstrap-admin.txt"
+  else
+    printf '初始密码已在首次改密后删除，无法读取当前密码。\n忘记密码请选择菜单 9，或执行 sudo hetun reset-password。\n'
+  fi
+}
 reset_password() {
   load_config
-  local answer
-  read -r -p '输入 RESET 确认重置管理员密码并清除登录会话：' answer
-  [[ "$answer" == RESET ]] || return
-  compose --profile tls stop terminal
-  if compose run --rm --no-deps terminal node scripts/reset-admin.mjs; then up; say '已重置。执行 puffer-terminal credentials 查看初始密码。'; else up; die '重置失败。'; fi
+  local answer password confirm
+  printf '\n修改管理员密码\n输入新密码（12–128 位）；直接回车则生成随机密码。\n'
+  read -r -s -p '新密码：' password || return 1
+  printf '\n'
+  if [[ -n "$password" ]]; then
+    [[ ${#password} -ge 12 && ${#password} -le 128 ]] || die '密码长度必须为 12–128 位。'
+    read -r -s -p '再次输入：' confirm || return 1
+    printf '\n'
+    [[ "$password" == "$confirm" ]] || die '两次密码不一致，未做修改。'
+  fi
+  read -r -p '确认修改并清除所有登录会话？输入 y 确认，其他取消：' answer || return 1
+  [[ "$answer" == y || "$answer" == Y ]] || { say '已取消，密码未修改。'; return; }
+  say '正在修改密码并重启服务，请稍候……'
+  compose --profile tls stop terminal </dev/null
+  if printf '%s' "$password" | compose run -T --rm --no-deps terminal node scripts/reset-admin.mjs --stdin; then
+    unset password confirm
+    up </dev/null
+    wait_health || die '密码已修改，但服务尚未恢复，请执行 sudo hetun logs 检查。'
+    say '密码修改成功，旧登录会话已失效。'
+    if [[ -s "$STATE_DIR/bootstrap-admin.txt" ]]; then show_credentials; else say '账号：admin；请使用刚刚输入的新密码登录。'; fi
+  else
+    unset password confirm
+    up </dev/null
+    die '密码修改失败，已尝试恢复服务，请查看上述错误。'
+  fi
 }
 uninstall_app() {
   load_config
@@ -344,25 +376,41 @@ uninstall_app() {
   say "容器已卸载，数据保留：$DATA_BASE；源码：$APP_BASE；再次运行 puffer-terminal start 恢复。"
 }
 menu() {
+  local choice action ignored
   while true; do
-    printf '\n╔══════════════════════════════════════╗\n║       河豚终端 · Linux 管理中心       ║\n╚══════════════════════════════════════╝\n菜单版本：%s\n' "$MENU_VERSION"
+    printf '\n==================================================\n  河豚终端 | Linux 管理中心 | 菜单 v%s\n==================================================\n' "$MENU_VERSION"
     if [[ -f "$ENV_FILE" ]]; then
       load_config
-      printf '安装版本：%s  提交：%.12s\n' "$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$SOURCE_DIR/package.json" | head -n 1)" "$REVISION"
-      compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' || true
-      show_access
+      printf '  安装版本：%s  提交：%.12s\n' "$(sed -n 's/.*"version": "\([^" ]*\)".*/\1/p' "$SOURCE_DIR/package.json" | head -n 1)" "$REVISION"
+      compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' </dev/null || true
+      if [[ "$MODE" == direct ]]; then
+        local menu_address
+        menu_address=${DOMAIN:-$(hostname -I 2>/dev/null | awk '{print $1}')}
+        printf '  后台：http://%s:%s\n' "${menu_address:-服务器IP}" "$LOCAL_PORT"
+      else
+        printf '  后台：https://%s\n' "$DOMAIN"
+      fi
     else
-      say '运行状态：尚未安装；选择 1 一键部署。'
+      printf '  状态：尚未安装\n'
     fi
-    printf ' 1 安装与环境准备     2 状态与地址\n 3 服务日志           4 更新终端\n 5 备份               6 恢复备份\n 7 修改域名/部署模式   8 查看初始账号\n 9 重置管理员密码    10 启动\n11 停止              12 证书日志\n13 卸载（保留数据）   14 检查更新\n15 重启服务           0 退出\n'
-    read -r -p '请选择：' choice || return
+    printf '\n  部署与更新\n   1. 安装与环境准备\n   4. 更新终端\n  14. 检查更新\n\n  服务管理\n   2. 状态与访问地址\n   3. 服务日志（Ctrl+C 返回）\n  10. 启动服务\n  11. 停止服务\n  15. 重启服务\n\n  账号与配置\n   7. 修改域名 / 部署模式\n   8. 查看初始账号和密码\n   9. 修改 / 重置管理员密码\n  12. 证书日志\n\n  数据维护\n   5. 备份\n   6. 恢复备份\n  13. 卸载（保留数据）\n\n   0. 退出\n--------------------------------------------------\n'
+    read -r -p '请输入编号并回车：' choice || return
     case "$choice" in
-      1) install_app ;; 2) load_config; compose --profile tls ps; show_access ;;
-      3) load_config; compose logs --tail=100 -f terminal ;; 4) update_app ;;
-      5) backup_app ;; 6) restore_app ;; 7) change_domain ;; 8) load_config; cat "$STATE_DIR/bootstrap-admin.txt" 2>/dev/null || say '初始密码已删除，请使用已设置的密码。' ;;
-      9) reset_password ;; 10) start_app ;; 11) load_config; compose --profile tls stop ;;
-      12) load_config; compose --profile tls logs --tail=100 proxy ;; 13) uninstall_app ;; 14) check_update ;; 15) load_config; compose restart terminal; wait_health ;; 0) return ;; *) say '选项无效。' ;;
+      1) action=install ;; 2) action=status ;; 3) action=logs ;; 4) action=update ;;
+      5) action=backup ;; 6) action=restore ;; 7) action=domain ;; 8) action=credentials ;;
+      9) action=reset-password ;; 10) action=start ;; 11) action=stop ;;
+      12) action=certificates ;; 13) action=uninstall ;; 14) action=check ;; 15) action=restart ;;
+      0) return ;; *) say '编号无效，请按菜单选择。'; continue ;;
     esac
+    # 独立 Bash 执行，失败不会关闭菜单，也不会关闭子命令的 errexit。
+    trap ':' INT
+    if bash "${BASH_SOURCE[0]}" "$action"; then
+      printf '\n操作结束。\n'
+    else
+      printf '\n操作未完成，请查看上方提示。\n'
+    fi
+    trap - INT
+    read -r -p '按回车返回菜单：' ignored || return
   done
 }
 main() {
@@ -372,8 +420,9 @@ main() {
     install) install_app ;; menu) menu ;; status) load_config; compose --profile tls ps; show_access ;;
     check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
-    credentials) load_config; cat "$STATE_DIR/bootstrap-admin.txt" ;; reset-password) reset_password ;;
+    credentials) show_credentials ;; reset-password) reset_password ;;
     start) start_app ;; stop) load_config; compose --profile tls stop ;;
+    certificates) load_config; compose --profile tls logs --tail=100 proxy ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
     uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
