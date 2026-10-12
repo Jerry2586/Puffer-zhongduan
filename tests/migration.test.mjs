@@ -5,6 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {openStore} from '../server/store.mjs';
 import {exportMigration,inspectMigration} from '../server/migration.mjs';
+await fs.mkdir(process.env.HETUN_TEST_ROOT||os.tmpdir(),{recursive:true});
+
 test('中断恢复：已移动和未移动的文件恢复成完整旧快照',async t=>{
  const root=await fs.mkdtemp(path.join(process.env.HETUN_TEST_ROOT||os.tmpdir(),'hetun-recover-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const s=await openStore(root),oldKey=s.publicKey;
  await fs.mkdir(path.join(root,'.migration-old'));await fs.mkdir(path.join(root,'.migration-new'));

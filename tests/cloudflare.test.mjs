@@ -5,6 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {prepareTunnel,rollbackTunnel,verifyTunnel,completeTunnel} from '../server/cloudflare.mjs';
+await fs.mkdir(process.env.HETUN_TEST_ROOT||os.tmpdir(),{recursive:true});
+
 async function fixture(t,fail=false,paginated=false){const root=await fs.mkdtemp(path.join(process.env.HETUN_TEST_ROOT||os.tmpdir(),'hetun-cf-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));let records=[{id:'old',type:'A',name:'sq.example.com',content:'192.0.2.1',ttl:300,proxied:false}],deleted=false;const calls=[];
  const fetchImpl=async(url,options={})=>{const u=new URL(url),method=options.method||'GET',body=options.body?JSON.parse(options.body):null;calls.push({path:u.pathname,method});assert.equal(options.headers.Authorization,'Bearer fake-private-api-token');let result;
  if(u.pathname.endsWith('/zones'))result=[{id:'zone',name:'example.com',account:{id:'account'}}];
