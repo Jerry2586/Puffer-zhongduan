@@ -559,6 +559,8 @@ menu_header() {
 diagnose_domain() {
   load_config
   show_access
+  domain_helpers
+  ingress_diagnostics
   if [[ -z "$DOMAIN" || "$MODE" == direct ]]; then
     say '尚未绑定无端口 HTTPS 域名。执行 sudo hetun domain，输入域名完成自动绑定。'
     return 1
@@ -613,6 +615,7 @@ main() {
   case ${1:-menu} in
     deploy) if [[ -f "$ENV_FILE" ]]; then update_app; else install_app; fi ;;
     install) install_app ;; menu) menu ;; status) load_config; compose --profile tls --profile tunnel ps; show_access ;;
+    ingress) load_config; domain_helpers; ingress_diagnostics ;;
     doctor) diagnose_domain ;; check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
     renew-certificate) load_config; domain_helpers; renew_certificate ;;
@@ -622,7 +625,7 @@ main() {
     start) start_app ;; stop) load_config; compose --profile tls --profile tunnel stop ;;
     certificates) load_config; compose --profile tls logs --tail=100 proxy ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
-    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|doctor|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|cloudflare-tunnel|renew-certificate|tunnel-rollback|tunnel-logs]' ;;
+    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|ingress|doctor|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|cloudflare-tunnel|renew-certificate|tunnel-rollback|tunnel-logs]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
   esac
 }

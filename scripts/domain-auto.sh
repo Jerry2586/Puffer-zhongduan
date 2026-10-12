@@ -3,15 +3,39 @@
 # Nginx variables stay literal; ACME_EMAIL is consumed by the caller's write_config.
 # shellcheck disable=SC2016,SC2034
 nginx_detect() {
-  local candidate
+  local candidate seen="|"
   for candidate in "$(command -v nginx || true)" /www/server/nginx/sbin/nginx /usr/sbin/nginx /usr/local/nginx/sbin/nginx; do
-    if [[ -n "$candidate" && -x "$candidate" ]] && "$candidate" -T >"$domain_tx/nginx.dump" 2>"$domain_tx/nginx.log"; then
+    [[ -n "$candidate" && -x "$candidate" && "$seen" != *"|$candidate|"* ]] || continue
+    seen+="$candidate|"
+    if "$candidate" -T >"$domain_tx/nginx.dump" 2>"$domain_tx/nginx.log"; then
       NGINX_BIN=$candidate
       return 0
     fi
+    printf 'Nginx 检测失败：%s（配置测试未通过）\n' "$candidate" >&2
+    head -n 8 "$domain_tx/nginx.log" >&2
   done
   say '80/443 已被占用，但未找到可管理的本机 Nginx/宝塔。现有服务保持可用。' >&2
+  ingress_diagnostics >&2
   return 1
+}
+certificate_unit_exists() {
+  local state
+  [[ -f "/etc/systemd/system/$1" ]] && return 0
+  state=$(systemctl show "$1" --property=LoadState --value 2>/dev/null) || return 1
+  [[ -n "$state" && "$state" != not-found ]]
+}
+ingress_diagnostics() {
+  say '入口诊断：TCP 80/443 监听服务'
+  if command -v ss >/dev/null; then
+    ss -H -ltnp '( sport = :80 or sport = :443 )' || say '无法读取端口监听信息。'
+  else
+    say '缺少 ss，无法读取端口监听信息。'
+  fi
+  if command -v docker >/dev/null; then
+    say 'Docker 端口映射（运行中的容器）：'
+    docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' || say '无法读取 Docker 容器。'
+  fi
+  say '已停止自动绑定。可执行 sudo hetun ingress 查看入口；不要关闭已有网站。'
 }
 domain_snapshot_file() {
   local target=$1 index=${#domain_paths[@]}
@@ -92,11 +116,15 @@ UNIT
 }
 domain_renew_remove() {
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
-    systemctl disable --now puffer-terminal-certificate.timer || true
-    systemctl stop puffer-terminal-certificate.service || true
+    if certificate_unit_exists puffer-terminal-certificate.timer; then
+      systemctl disable --now puffer-terminal-certificate.timer || return 1
+    fi
+    if certificate_unit_exists puffer-terminal-certificate.service; then
+      systemctl stop puffer-terminal-certificate.service || return 1
+    fi
   fi
   rm -f -- /etc/systemd/system/puffer-terminal-certificate.service /etc/systemd/system/puffer-terminal-certificate.timer /etc/cron.d/puffer-terminal-certificate
-  if [[ -d /run/systemd/system ]]; then systemctl daemon-reload; fi
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then systemctl daemon-reload; fi
 }
 managed_domain_read() {
   MANAGED_CONF='' MANAGED_DOMAIN='' NGINX_BIN=''

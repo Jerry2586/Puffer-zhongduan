@@ -14,6 +14,23 @@ trap 'rm -rf -- "$sandbox"' EXIT
 CONFIG_DIR=$sandbox/config DATA_BASE=$sandbox/data
 ENV_FILE=$CONFIG_DIR/terminal.env COMPOSE_FILE=$CONFIG_DIR/compose.yaml
 mkdir -p "$CONFIG_DIR" "$DATA_BASE" "$sandbox/sites"
+# Read-only diagnostics and absent-unit detection must not mutate host services.
+(
+  systemctl() { [[ "$*" == 'show puffer-terminal-certificate.timer --property=LoadState --value' ]] || return 9; printf '%s\n' "$fixture_state"; }
+  fixture_state=not-found
+  if certificate_unit_exists puffer-terminal-certificate.timer; then exit 1; fi
+  fixture_state=loaded
+  certificate_unit_exists puffer-terminal-certificate.timer
+  fixture_state=''
+  if certificate_unit_exists puffer-terminal-certificate.timer; then exit 1; fi
+  ss() { [[ "$*" == '-H -ltnp ( sport = :80 or sport = :443 )' ]] || return 9; printf 'LISTEN docker-proxy:80\n'; }
+  docker() { [[ "$1" == ps && "$2" == --format ]] || return 9; printf 'gateway nginx 0.0.0.0:443->443/tcp\n'; }
+  command() { if [[ "$1" == -v && ( "$2" == ss || "$2" == docker ) ]]; then return 0; fi; builtin command "$@"; }
+  ingress_diagnostics >"$sandbox/ingress.log"
+  grep -q 'docker-proxy:80' "$sandbox/ingress.log"
+  grep -q 'gateway nginx' "$sandbox/ingress.log"
+  grep -q 'sudo hetun ingress' "$sandbox/ingress.log"
+)
 TARGET=$sandbox/sites/hetun.conf
 printf 'other website\n' >"$sandbox/sites/unrelated.conf"
 load_config() {
