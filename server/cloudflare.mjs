@@ -72,7 +72,7 @@ export async function diagnoseDomain(root,domain,{fetchImpl=fetch}={}){
   let r;
   try { r=await fetchImpl('https://'+domain+'/v1/license/public-key',{signal:AbortSignal.timeout(10000),redirect:'error',headers:{'Cache-Control':'no-cache'}}); }
   catch { throw Error('HTTPS 无法连接：请检查域名解析、公网证书和 Tunnel 出站网络；可用 sudo hetun domain 重新绑定。'); }
-  if(r.status===525)throw Error('Cloudflare 525：Cloudflare 与源站 TLS 握手失败。请用 sudo hetun domain 切换自动 Tunnel 绑定，或修复已有代理的源站证书；仅修改 DNS 不会完成 HTTPS 绑定。');
+  if(r.status===525)throw Error('Cloudflare 525：Cloudflare 与源站 TLS 握手失败。请用 sudo hetun domain 自动配置源站 HTTPS，或修复已有代理的源站证书；仅修改 DNS 不会完成 HTTPS 绑定。');
   if(!r.ok)throw Error('公网检查返回 HTTP '+r.status+'；请检查域名路由、Tunnel 日志与访问策略。');
   let data;try{data=await r.json();}catch{throw Error('域名返回的不是终端接口；请检查是否指向了其他站点。');}
   if(data.keyId!==keyId||data.publicKey!==publicKey)throw Error('域名指向另一终端或站点，当前终端身份不匹配。');

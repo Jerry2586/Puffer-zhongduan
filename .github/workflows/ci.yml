@@ -21,12 +21,15 @@ jobs:
         run: npm test
       - name: Linux shell validation
         run: |
-          bash -n install scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh scripts/test-install.sh scripts/maintenance.sh
+          bash -n install scripts/install.sh scripts/linux-menu.sh scripts/domain-auto.sh scripts/test-domain.sh scripts/verify-nginx.sh scripts/verify-linux.sh scripts/test-install.sh scripts/maintenance.sh
           bash scripts/test-install.sh
-          shellcheck -x install scripts/install.sh scripts/linux-menu.sh scripts/verify-linux.sh scripts/test-install.sh scripts/maintenance.sh
+          bash scripts/test-domain.sh
+          shellcheck -x install scripts/install.sh scripts/linux-menu.sh scripts/domain-auto.sh scripts/test-domain.sh scripts/verify-nginx.sh scripts/verify-linux.sh scripts/test-install.sh scripts/maintenance.sh
   linux-container:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Docker and maintenance acceptance
         run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_SHA bash scripts/verify-linux.sh
+      - name: Real Nginx domain routing acceptance
+        run: bash scripts/verify-nginx.sh

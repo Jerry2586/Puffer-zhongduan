@@ -32,6 +32,9 @@ wait_health
 curl -fsS "http://127.0.0.1:$LOCAL_PORT/" | grep -q '河豚终端'
 key_before=$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)
 docker run --rm -e DOMAIN="$DOMAIN" -e ACME_EMAIL="$ACME_EMAIL" -v "$SOURCE_DIR/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+mkdir -p "$DATA_BASE/acme/letsencrypt/archive/hetun-test" "$DATA_BASE/acme/letsencrypt/live/hetun-test"
+printf certificate-proof >"$DATA_BASE/acme/letsencrypt/archive/hetun-test/fullchain1.pem"
+ln -s ../../archive/hetun-test/fullchain1.pem "$DATA_BASE/acme/letsencrypt/live/hetun-test/fullchain.pem"
 backup_app
 [[ -s "$LAST_BACKUP.sha256" ]]
 compose stop terminal
@@ -47,6 +50,8 @@ cp "$archive_to_restore.sha256" "$BACKUP_DIR/portable.tar.gz.sha256"
 printf '%s\nRESTORE\n' "$BACKUP_DIR/portable.tar.gz" | bash "$SOURCE_DIR/scripts/linux-menu.sh" restore
 wait_health
 [[ "$(sha256sum "$STATE_DIR/keys/private.pem" | cut -d ' ' -f1)" == "$key_before" ]]
+[[ $(cat "$DATA_BASE/acme/letsencrypt/live/hetun-test/fullchain.pem") == certificate-proof ]]
+[[ ! -L "$DATA_BASE/acme/letsencrypt/live/hetun-test/fullchain.pem" ]]
 # 从共存模式切换到无域名模式，确认公网端口映射、真实 HTTP 和数据保留。
 printf '%s\n' '-' '8793' | bash "$SOURCE_DIR/scripts/linux-menu.sh" advanced-domain
 load_config

@@ -29,13 +29,15 @@ sudo hetun reset-password
 
 ## 域名自动 HTTPS
 
-默认使用 Cloudflare Tunnel，不占用服务器 80/443，不需要改已有网站。域名必须在 Cloudflare 的活动 DNS 区域中。输入域名后，工具读取一次 API Token，创建 Tunnel 和指定域名 DNS，并等待公网 HTTPS 返回本终端的公钥与身份。只有身份验证通过才报告绑定成功；失败回滚本地配置和本次远端变更。
+CF 已把域名解析到当前服务器后，执行 sudo hetun domain，只输入域名。默认不索要 API Token、不修改 DNS、不询问部署模式、服务端口或证书邮箱。
 
-API Token 需要目标账号的 Cloudflare Tunnel 编辑、目标区域的 Zone 读取和 DNS 编辑权限。工具只修改输入域名的 A/AAAA/CNAME，绑定将替换这些记录。令牌不写入磁盘和日志。Tunnel 的运行连接令牌仍须私密保存，位于外部 state/deployment 目录。服务器需要访问 Cloudflare API，并允许 Tunnel 出站连接（7844 TCP/UDP，HTTPS 443）。只输入域名无法绕过域名管理权限和网络条件。
+程序自动选择：公网 80/443 空闲时用 Caddy 自动 HTTPS；存在本机标准 Nginx 或宝塔 Nginx 时，为这个域名生成独立站点，使用容器 Certbot 申请证书，配置自动续期并平滑加载。支持 /etc/nginx/conf.d、sites-enabled、宝塔 vhost/nginx 和 /usr/local/nginx/conf/vhost 的标准 include。已存在的单域名 .conf 会备份并接管；多域名共用文件、符号链接、未知代理和手工修改的受管理站点会停止自动处理，保留原网站。
 
-公网验证是绑定时的检查结果，页面展示检查时间，不代表持续在线监控。成功更换域名时旧 Tunnel 资源不会自动删除，可在 Cloudflare 核对后自行清理。输入 - 可以清除当前域名，切回 IP 直连；远端旧资源保留。
+新地址必须通过有效 HTTPS 和本终端公钥一致性检查；仅保存域名或返回 HTTP 200 不算成功。失败恢复原终端配置和修改过的站点。源站必须可被证书验证服务器和 CF 访问，安全组需允许公网 80/443；仅更换应用内部随机端口不能替代公网网站入口。CF 强制 HTTPS、WAF、Access 或源站不可达可能阻断证书验证，此时明确报告失败，不伪造绑定成功。
 
-高级部署通过备份与高级工具或 sudo hetun advanced-domain 进入：独立 Caddy 自动 HTTPS 要求正确 DNS、公网 80/443 可用；已有宝塔/Nginx 共存模式由现有站点提供证书和代理；无域名时允许 IP 加端口临时访问；新域名绑定不再提供 HTTP 域名加端口。旧直连配置需执行 sudo hetun domain 迁移。sudo hetun doctor 会核验公网 HTTPS 与当前终端签名身份，发现 525 或错误站点时返回失败。代理应保留 Host，上传上限至少 128m，外部域名/协议须与终端配置一致。HTTP 直连不加密网络传输。
+Nginx 原站点与受管理配置记录位于 /etc/puffer-terminal/domain，证书位于 /var/lib/puffer-terminal/acme，挑战文件目录为 /var/www/puffer-terminal-acme。备份会把证书链接保存为实际文件，恢复仍拒绝包内符号链接。自动续期使用 systemd timer（非 systemd 系统回退 cron），默认每天检查两次。输入 - 清除域名，恢复原站点并切回 IP 直连。保留数据卸载会恢复原站点，sudo hetun start 再接入受管理站点。
+
+已有高级部署与 Cloudflare Tunnel 保留。需要程序修改 CF DNS、创建 Tunnel 时执行 sudo hetun cloudflare-tunnel，才输入具备 Tunnel 编辑、Zone 读取和 DNS 编辑权限的 API Token；令牌不落盘。旧 Tunnel 资源不自动删除。sudo hetun doctor 只读检查公网 HTTPS 和当前终端身份。
 
 ## 产品对接与页面迁移
 

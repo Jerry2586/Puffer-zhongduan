@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.2.1
+MENU_VERSION=0.2.2
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -178,6 +178,8 @@ start_app() {
   up
   wait_health || die '服务启动失败，请查看 logs。'
   install_menu
+  domain_helpers
+  managed_domain_resume
   show_access
 }
 prepare_maintenance() {
@@ -275,7 +277,7 @@ install_app() {
     up </dev/null
     wait_health || die '密码已设置，但服务尚未健康，请查看日志。'
   else show_credentials; fi
-  if [[ -n "$requested_domain" ]]; then bind_tunnel "$requested_domain"; else show_access; fi
+  if [[ -n "$requested_domain" ]]; then domain_helpers; bind_auto_domain "$requested_domain"; else show_access; fi
 }
 backup_app() {
   load_config
@@ -284,7 +286,7 @@ backup_app() {
   archive=$BACKUP_DIR/puffer-$(date -u +%Y%m%dT%H%M%S)-$$.tar.gz
   # 停止本项目服务使 JSON、密钥、文件和证书处于一致快照。
   if [[ -n $(compose ps -q --status running) ]]; then resume=1; compose --profile tls --profile tunnel stop; fi
-  if ! tar -czf "$archive" -C / etc/puffer-terminal var/lib/puffer-terminal; then
+  if ! tar --dereference -czf "$archive" -C / etc/puffer-terminal var/lib/puffer-terminal; then
     [[ $resume == 1 ]] && up
     die '备份失败，未执行升级。'
   fi
@@ -426,17 +428,23 @@ bind_tunnel() {
   restore_domain_config
   die '域名核验失败，已恢复原部署。'
 }
+domain_helpers() {
+  # shellcheck source=scripts/domain-auto.sh
+  source "$SOURCE_DIR/scripts/domain-auto.sh"
+}
 change_domain() {
   load_config
   read_domain
-  if [[ -n "$NEW_DOMAIN" ]]; then backup_app; bind_tunnel "$NEW_DOMAIN"; else
-    backup_app
-    DOMAIN='' MODE=direct ACME_EMAIL=''
-    write_config
-    up
-    wait_health || die 'IP 访问模式未正常启动，请查看日志。'
-    show_access
-  fi
+  domain_helpers
+  backup_app
+  if [[ -n "$NEW_DOMAIN" ]]; then bind_auto_domain "$NEW_DOMAIN"; else clear_auto_domain; fi
+}
+cloudflare_tunnel() {
+  load_config
+  read_domain
+  [[ -n "$NEW_DOMAIN" ]] || die 'Tunnel 需要域名。'
+  backup_app
+  bind_tunnel "$NEW_DOMAIN"
 }
 
 advanced_domain() {
@@ -512,6 +520,8 @@ uninstall_app() {
   exec {update_lock}>/run/lock/puffer-terminal-update.lock
   flock -n "$update_lock" || die '正在更新，请完成后卸载。'
   backup_app
+  domain_helpers
+  managed_domain_suspend
   remove_maintenance
   compose --profile tls --profile tunnel down
   if [[ "$choice" == 2 ]]; then
@@ -571,11 +581,11 @@ account_menu() {
 advanced_menu() {
   local choice action
   while true; do
-    printf '\n  备份与高级工具\n  1 创建备份    2 恢复备份\n  3 高级域名    4 证书日志\n  5 Tunnel 日志 6 域名回滚\n  0 返回\n'
+    printf '\n  备份与高级工具\n  1 创建备份    2 恢复备份\n  3 高级域名    4 证书日志\n  5 Tunnel 日志 6 域名回滚\n  7 Cloudflare Tunnel（需令牌）\n  0 返回\n'
     read -r -p '请选择：' choice || return
     case "$choice" in
       1) action=backup;; 2) action=restore;; 3) action=advanced-domain;; 4) action=certificates;;
-      5) action=tunnel-logs;; 6) action=tunnel-rollback;; 0) return;; *) say '编号无效。'; continue;;
+      5) action=tunnel-logs;; 6) action=tunnel-rollback;; 7) action=cloudflare-tunnel;; 0) return;; *) say '编号无效。'; continue;;
     esac
     run_menu_action "$action"
   done
@@ -603,13 +613,14 @@ main() {
     install) install_app ;; menu) menu ;; status) load_config; compose --profile tls --profile tunnel ps; show_access ;;
     doctor) diagnose_domain ;; check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
-    advanced-domain) advanced_domain ;; tunnel-rollback) tunnel_rollback ;;
+    renew-certificate) load_config; domain_helpers; renew_certificate ;;
+    cloudflare-tunnel) cloudflare_tunnel ;; advanced-domain) advanced_domain ;; tunnel-rollback) tunnel_rollback ;;
     tunnel-logs) load_config; compose --profile tunnel logs --tail=100 tunnel ;;
     credentials) show_credentials ;; reset-password) reset_password ;;
     start) start_app ;; stop) load_config; compose --profile tls --profile tunnel stop ;;
     certificates) load_config; compose --profile tls logs --tail=100 proxy ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
-    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|doctor|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|tunnel-rollback|tunnel-logs]' ;;
+    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|doctor|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|cloudflare-tunnel|renew-certificate|tunnel-rollback|tunnel-logs]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
   esac
 }
