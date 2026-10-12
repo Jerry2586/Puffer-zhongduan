@@ -376,7 +376,7 @@ uninstall_app() {
   say "容器已卸载，数据保留：$DATA_BASE；源码：$APP_BASE；再次运行 puffer-terminal start 恢复。"
 }
 menu() {
-  local choice action ignored
+  local choice action
   while true; do
     printf '\n==================================================\n  河豚终端 | Linux 管理中心 | 菜单 v%s\n==================================================\n' "$MENU_VERSION"
     if [[ -f "$ENV_FILE" ]]; then
@@ -410,7 +410,7 @@ menu() {
       printf '\n操作未完成，请查看上方提示。\n'
     fi
     trap - INT
-    read -r -p '按回车返回菜单：' ignored || return
+    read -r -p '按回车返回菜单：' || return
   done
 }
 main() {
