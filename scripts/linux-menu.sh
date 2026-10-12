@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.1.2
+MENU_VERSION=0.1.3
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -341,11 +341,10 @@ show_credentials() {
 reset_password() {
   load_config
   local answer password confirm
-  printf '\n修改管理员密码\n输入新密码（12–128 位）；直接回车则生成随机密码。\n'
+  printf '\n修改管理员密码\n输入你要设置的新密码；直接回车则生成随机密码。\n'
   read -r -s -p '新密码：' password || return 1
   printf '\n'
   if [[ -n "$password" ]]; then
-    [[ ${#password} -ge 12 && ${#password} -le 128 ]] || die '密码长度必须为 12–128 位。'
     read -r -s -p '再次输入：' confirm || return 1
     printf '\n'
     [[ "$password" == "$confirm" ]] || die '两次密码不一致，未做修改。'

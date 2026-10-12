@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openStore, checkPassword } from '../server/store.mjs';
-test('管理员脚本：随机重置、自定义密码、无效输入不修改、私钥保留', async t => {
+test('管理员脚本：随机重置、自定义密码、短密码与长密码、私钥保留', async t => {
   const base = process.env.HETUN_TEST_ROOT || os.tmpdir();
   await fs.mkdir(base, { recursive: true });
   const root = await fs.mkdtemp(path.join(base, 'puffer-reset-'));
@@ -25,8 +25,10 @@ test('管理员脚本：随机重置、自定义密码、无效输入不修改�
   assert.equal(record.mustChange, false);
   assert.equal(await checkPassword(password, record), true);
   await assert.rejects(fs.access(path.join(root, 'bootstrap-admin.txt')));
-  assert.notEqual(run('short').status, 0);
-  assert.notEqual(run('x'.repeat(129)).status, 0);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'admin.json'), 'utf8')), record);
+  for (const value of ['1', '123456', '中', 'x'.repeat(300)]) {
+    assert.equal(run(value).status, 0);
+    record = JSON.parse(await fs.readFile(path.join(root, 'admin.json'), 'utf8'));
+    assert.equal(await checkPassword(value, record), true);
+  }
   assert.equal(await fs.readFile(path.join(root, 'keys/private.pem'), 'utf8'), key);
 });

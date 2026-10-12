@@ -10,11 +10,9 @@ if (process.argv.includes('--stdin')) {
   process.stdin.setEncoding('utf8');
   for await (const chunk of process.stdin) {
     password += chunk.toString('utf8');
-    if (password.length > 128) throw Error('密码长度必须为 12–128 位。');
   }
 }
 const custom = password.length > 0;
-if (custom && password.length < 12) throw Error('密码长度必须为 12–128 位。');
 if (!custom) password = crypto.randomBytes(18).toString('base64url');
 await atomic(path.join(root, 'admin.json'), { username: 'admin', ...await passwordRecord(password), mustChange: !custom });
 if (custom) {

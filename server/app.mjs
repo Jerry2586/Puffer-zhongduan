@@ -47,15 +47,22 @@ export async function createTerminal(options) {
     if (!value || value.exp < Date.now()) { if (id) sessions.delete(id); throw failure('请先登录', 401); }
     return { ...value, id };
   }
-  function requestOrigin(req) {
-    if (!directHttp || options.origin) return origin;
+  function directRequestOrigin(req) {
     let u;
     try { u = new URL('http://' + req.headers.host); } catch { throw failure('访问地址无效', 400); }
     const hostname = u.hostname.replace(/^\[|\]$/g, '');
-    if (u.username || u.password || u.pathname !== '/' || u.search || u.hash || (!isIP(hostname) && hostname !== 'localhost')) throw failure('无域名模式请使用服务器 IP 和端口访问', 400);
+    const configuredHost = options.origin ? new URL(origin).hostname.replace(/^\[|\]$/g, '') : '';
+    if (u.username || u.password || u.pathname !== '/' || u.search || u.hash || (!isIP(hostname) && hostname !== 'localhost' && hostname !== configuredHost)) throw failure('请使用服务器 IP 或已配置的域名和端口访问', 400);
     return u.origin;
   }
-  function sameOrigin(req) { if (req.headers.origin !== requestOrigin(req)) throw failure('请求来源不匹配', 403); }
+  function requestOrigin(req) {
+    if (!directHttp || options.origin) return origin;
+    return directRequestOrigin(req);
+  }
+  function sameOrigin(req) {
+    const expected = directHttp ? directRequestOrigin(req) : origin;
+    if (req.headers.origin !== expected) throw failure('请求来源不匹配，请使用 ' + expected + ' 访问；经过 HTTPS 代理时请在管理菜单 7 配置域名和共存模式', 403);
+  }
   function admin(req, write = false) {
     const s = session(req);
     if (write) { sameOrigin(req); if (req.headers['x-csrf-token'] !== s.csrf) throw failure('操作凭证无效，请刷新页面', 403); }
@@ -100,10 +107,10 @@ export async function createTerminal(options) {
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.2' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.1.3' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
-      if (b.username !== 'admin' || typeof b.password !== 'string' || b.password.length > 200 || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
+      if (b.username !== 'admin' || typeof b.password !== 'string' || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
       for (const [id, value] of sessions) if (value.exp < Date.now()) sessions.delete(id);
       if (sessions.size > 500) throw failure('会话数量已满', 429);
       const id = crypto.randomBytes(32).toString('base64url'), csrf = crypto.randomBytes(24).toString('base64url');
@@ -114,8 +121,8 @@ export async function createTerminal(options) {
     if (r === '/api/logout' && m === 'POST') { const s = admin(req, true); sessions.delete(s.id); res.setHeader('Set-Cookie', cookie('', 0)); return json(res, 200, { ok: true }); }
     if (r === '/api/password' && m === 'POST') {
       const s = admin(req, true), b = await body(req);
-      if (typeof b.current !== 'string' || b.current.length > 200 || !await checkPassword(b.current, store.admin)) throw failure('当前密码错误', 403);
-      if (typeof b.password !== 'string' || b.password.length < 12 || b.password.length > 128 || b.password === b.current) throw failure('新密码需为 12–128 位，且与原密码不同');
+      if (typeof b.current !== 'string' || !await checkPassword(b.current, store.admin)) throw failure('当前密码错误', 403);
+      if (typeof b.password !== 'string' || b.password.length === 0 || b.password === b.current) throw failure('新密码不能为空，且与原密码不同');
       await store.changePassword(b.password); sessions.clear(); sessions.set(s.id, { csrf: s.csrf, exp: Date.now() + 28800000 });
       store.audit('修改管理员密码', 'admin'); await store.commit(); return json(res, 200, { ok: true });
     }
@@ -123,7 +130,7 @@ export async function createTerminal(options) {
       readyAdmin(req, m !== 'GET');
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.2' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.1.3' });
       }
       if (r === '/api/customers' && m === 'POST') {
         const b = await body(req), name = String(b.name || '').trim(); if (!name || name.length > 80) throw failure('客户名称为 1–80 字');

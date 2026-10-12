@@ -13,13 +13,12 @@ const folder=process.env.HETUN_TEST_ROOT||os.tmpdir();
 const sourceZip=makeZip(new Map([['pubspec.yaml','name: puffer'],['lib/main.dart','void main() {}']]));
 const themeZip=makeZip(new Map([['manifest.json',JSON.stringify({format:'hetun-skeleton',version:3,renderer:'hetun-flutter-v1',platform:'mobile',id:'puffer-theme',theme:{}})]]));
 function verified(envelope,key){assert.equal(envelope.algorithm,'Ed25519');const bytes=Buffer.from(envelope.payload,'base64url');assert.equal(crypto.verify(null,bytes,key,Buffer.from(envelope.signature,'base64url')),true);return JSON.parse(bytes);}
-async function setup(t,options={}){await fs.mkdir(folder,{recursive:true});const root=await fs.mkdtemp(path.join(folder,'puffer-test-'));let app=await createTerminal({root,port:0,...options});let origin=await app.listen(),cookie='',csrf='';const bootstrap=await fs.readFile(path.join(root,'bootstrap-admin.txt'),'utf8');const password=bootstrap.match(/密码：([^\n]+)/)[1];
-async function call(url,method='GET',body,headers={},admin=true){const h={...headers};if(admin){if(cookie)h.Cookie=cookie;if(method!=='GET'){h.Origin=origin;h['X-CSRF-Token']=csrf;}}Object.assign(h,headers);if(body!==undefined && !Buffer.isBuffer(body)){h['Content-Type']='application/json';body=JSON.stringify(body);}const res=h.Host ? await new Promise((resolve,reject)=>{const req=http.request(origin+url,{method,headers:h},r=>{const chunks=[];r.on('data',c=>chunks.push(c));r.on('end',()=>resolve({status:r.statusCode,headers:{get:n=>r.headers[n.toLowerCase()]||null},arrayBuffer:async()=>Buffer.concat(chunks)}));r.on('error',reject);});req.on('error',reject);req.end(body);}) : await fetch(origin+url,{method,headers:h,body});const bytes=Buffer.from(await res.arrayBuffer());let value;try{value=JSON.parse(bytes);}catch{value=null;}return {status:res.status,value,bytes,headers:res.headers};}
+async function setup(t,options={}){await fs.mkdir(folder,{recursive:true});const root=await fs.mkdtemp(path.join(folder,'puffer-test-'));let app=await createTerminal({root,port:0,...options});await app.listen();let origin='http://127.0.0.1:'+app.server.address().port,cookie='',csrf='';t.after(async()=>{await app.close();await fs.rm(root,{recursive:true,force:true});});const bootstrap=await fs.readFile(path.join(root,'bootstrap-admin.txt'),'utf8');const password=bootstrap.match(/密码：([^\n]+)/)[1];
+async function call(url,method='GET',body,headers={},admin=true){const h={...headers};if(admin){if(cookie)h.Cookie=cookie;if(method!=='GET'){h.Origin=options.directHttp ? origin : (options.origin || origin);h['X-CSRF-Token']=csrf;}}Object.assign(h,headers);if(body!==undefined && !Buffer.isBuffer(body)){h['Content-Type']='application/json';body=JSON.stringify(body);}const res=h.Host ? await new Promise((resolve,reject)=>{const req=http.request(origin+url,{method,headers:h},r=>{const chunks=[];r.on('data',c=>chunks.push(c));r.on('end',()=>resolve({status:r.statusCode,headers:{get:n=>r.headers[n.toLowerCase()]||null},arrayBuffer:async()=>Buffer.concat(chunks)}));r.on('error',reject);});req.on('error',reject);req.end(body);}) : await fetch(origin+url,{method,headers:h,body});const bytes=Buffer.from(await res.arrayBuffer());let value;try{value=JSON.parse(bytes);}catch{value=null;}return {status:res.status,value,bytes,headers:res.headers};}
 const login=await call('/api/login','POST',{username:'admin',password});assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];csrf=login.value.csrf;
 assert.equal((await call('/api/customers','POST',{name:'before-change'})).status,428);
 assert.equal((await call('/api/password','POST',{current:password,password:'test-secure-password-2026'})).status,200);
 await assert.rejects(fs.access(path.join(root,'bootstrap-admin.txt')));
-t.after(async()=>{await app.close();await fs.rm(root,{recursive:true,force:true});});
 return {root,get app(){return app;},get origin(){return origin;},call,async restart(){await app.close();app=await createTerminal({root,port:0});origin=await app.listen();cookie='';csrf='';},async customer(name='测试客户'){const r=await call('/api/customers','POST',{name});assert.equal(r.status,201);return r.value;},async issue(customerId,props={}){const r=await call('/api/licenses','POST',{customerId,products:['theme-center','packer','operations'],expiresAt:new Date(Date.now()+10*86400000).toISOString(),...props});assert.equal(r.status,201);return r.value;},async upload(kind,version,bytes,props={}){const meta={kind,product:kind==='software'?'packer':'client',platform:kind==='software'?'windows':'all',version,name:kind+' '+version,notes:'真实版本说明',filename:'test.zip',engine:kind==='client-source'?'flutter':'none',...props};const r=await call('/api/releases','POST',bytes,{'Content-Type':'application/octet-stream','X-Release-Metadata':encodeURIComponent(JSON.stringify(meta))});return r;},async publish(id){assert.equal((await call('/api/releases/'+id,'PATCH',{status:'published'})).status,200);},async activate(key,product='packer',deviceId='test-device-001',props={}){return call('/v1/license/activate','POST',{product,deviceId,domain:'ops.example.com',version:'1.0.0',nonce:crypto.randomBytes(18).toString('base64url'),...props},{Authorization:'Bearer '+key},false);}};}
 test('版本排序、域名规范与危险 ZIP 拒绝',()=>{assert.ok(compareVersions('1.10.0','1.9.0')>0);assert.ok(compareVersions('1.0.0','1.0.0-beta.9')>0);assert.ok(compareVersions('1.0.0-beta.10','1.0.0-beta.2')>0);assert.equal(hostname('HTTPS://OPS.EXAMPLE.COM/'),'ops.example.com');assert.throws(()=>hostname('https://ops.example.com:8443/'));assert.throws(()=>readZip(makeZip(new Map([['../escape','bad']]))));assert.throws(()=>readZip(makeZip(new Map([['a','one'],['A','two']]))));const damaged=Buffer.from(sourceZip);damaged[40]^=1;assert.throws(()=>readZip(damaged));});
 test('真实登录、初始改密、CSRF、外部状态和静态页面',async t=>{const x=await setup(t);assert.equal((await x.call('/api/overview')).status,200);assert.equal((await x.call('/api/customers','POST',{name:'bad'},{Origin:'https://evil.example'})).status,403);assert.equal((await x.call('/api/customers','POST',{name:'bad'},{'X-CSRF-Token':'wrong'})).status,403);assert.equal((await x.call('/api/customers','POST',null)).status,400);const page=await x.call('/');assert.equal(page.status,200);assert.match(page.bytes.toString(),/河豚终端/);assert.match(page.headers.get('content-security-policy'),/frame-ancestors 'none'/);const forbidden=path.resolve(fileURLToPath(new URL('../server',import.meta.url)));await assert.rejects(createTerminal({root:forbidden,port:0}),/运行数据/);});
@@ -45,4 +44,34 @@ test('无域名 Docker 模式实际登录、IP 来源、跨站拒绝和签发地
   const a=await x.call('/v1/license/activate','POST',{product:'packer',deviceId:'ip-device-001',version:'1.0.0',nonce:crypto.randomBytes(18).toString('base64url')},{...headers,Authorization:'Bearer '+l.key},false);
   assert.equal(a.status,200); assert.equal(verified(a.value.lease,x.app.store.publicKey).issuer,address);
   const key=await x.call('/v1/license/public-key','GET',undefined,headers,false); assert.equal(key.value.issuer,address);
+});
+
+test('管理员自定密码长度：单字符、中文和长密码均可修改及登录',async t=>{
+  const x=await setup(t); let current='test-secure-password-2026';
+  for(const password of ['1','123456','中','x'.repeat(300)]) {
+    assert.equal((await x.call('/api/password','POST',{current,password})).status,200);
+    assert.equal((await x.call('/api/login','POST',{username:'admin',password})).status,200);
+    current=password;
+  }
+  assert.equal((await x.call('/api/password','POST',{current,password:''})).status,400);
+});
+test('域名端口直连可通过配置域名或服务器 IP 登录，同时保留签发地址和跨站校验',async t=>{
+  const canonical='http://sq.example.test:1025';
+  const x=await setup(t,{directHttp:true,origin:canonical});
+  for(const Host of ['sq.example.test:1025','192.0.2.10:1025','[2001:db8::1]:1025']) {
+    const headers={Host,Origin:'http://'+Host};
+    assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},headers)).status,200);
+    const overview=await x.call('/api/overview','GET',undefined,headers);
+    assert.equal(overview.status,200); assert.equal(overview.value.origin,canonical);
+    assert.equal((await x.call('/api/customers','POST',{name:'直连客户'},headers)).status,201);
+    assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{...headers,Origin:'https://evil.example'})).status,403);
+    assert.equal((await x.call('/api/customers','POST',{name:'跨站'},{...headers,Origin:canonical===headers.Origin?'http://192.0.2.11:1025':canonical})).status,403);
+    assert.equal((await x.call('/api/customers','POST',{name:'错误凭证'},{...headers,'X-CSRF-Token':'wrong'})).status,403);
+  }
+  assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{Host:'evil.example',Origin:'http://evil.example'})).status,400);
+});
+test('HTTPS 代理登录继续使用配置域名，拒绝伪造转发头',async t=>{
+  const canonical='https://sq.example.test'; const x=await setup(t,{origin:canonical});
+  assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{Host:'terminal:8792',Origin:canonical})).status,200);
+  assert.equal((await x.call('/api/login','POST',{username:'admin',password:'test-secure-password-2026'},{Host:'terminal:8792',Origin:'https://evil.example','X-Forwarded-Host':'evil.example','X-Forwarded-Proto':'https'})).status,403);
 });
