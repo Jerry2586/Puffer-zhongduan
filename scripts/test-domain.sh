@@ -25,7 +25,6 @@ mkdir -p "$CONFIG_DIR" "$DATA_BASE" "$sandbox/sites"
   if certificate_unit_exists puffer-terminal-certificate.timer; then exit 1; fi
   ss() { [[ "$*" == '-H -ltnp ( sport = :80 or sport = :443 )' ]] || return 9; printf 'LISTEN docker-proxy:80\n'; }
   docker() { [[ "$1" == ps && "$2" == --format ]] || return 9; printf 'gateway nginx 0.0.0.0:443->443/tcp\n'; }
-  command() { if [[ "$1" == -v && ( "$2" == ss || "$2" == docker ) ]]; then return 0; fi; builtin command "$@"; }
   ingress_diagnostics >"$sandbox/ingress.log"
   grep -q 'docker-proxy:80' "$sandbox/ingress.log"
   grep -q 'gateway nginx' "$sandbox/ingress.log"
