@@ -1,6 +1,6 @@
 # 河豚终端
 
-河豚产品的授权、版本与交付管理后台，版本 `0.2.0`。紫色品牌、日夜主题、响应式 SaaS 界面，页面直接读写服务端数据。
+河豚产品的授权、版本与交付管理后台，版本 `0.2.1`。紫色品牌、日夜主题、响应式 SaaS 界面，页面直接读写服务端数据。
 
 ## 使用流程
 
@@ -94,3 +94,9 @@ GitHub Actions 另在临时 Ubuntu runner 验证 Docker 启动、非 root 运行
 - [Linux 安装与维护](docs/linux-install.md)
 
 首版为一个管理员、单个服务实例、外部 JSON 原子持久化；不配置多个终端容器共享写入。多管理员、高并发、多服务器部署应升级数据库与任务调度。公网访问依赖服务器网络、安全组以及容器镜像下载条件；域名仅在使用域名访问时需要。Windows、Android、iOS 的原生签名由各自构建执行器完成，本终端核验传输完整性与基本格式，不替代平台签名验证。
+
+### 终端自身更新
+
+终端设置的“版本与更新”检查固定仓库 Jerry2586/Puffer-zhongduan 的 main 提交。Linux 安装后支持在线更新，自动备份、重新构建并健康检查；失败尝试回退。在线更新由宿主机 systemd 定时服务执行，网页不持有 Docker socket。没有 systemd 时仍可用 sudo hetun update。Windows 本地开发预览支持检查 Git，在线安装按钮保持禁用。
+
+Linux 更多管理新增“在线更新”；“卸载管理”可选择保留数据或删除终端数据与源码，两种方式都保留备份，Docker 与其他站点不会删除。完整卸载需两次文字确认。卸载后停止更新代理；保留数据时 sudo hetun start 恢复。更新记录在 /var/lib/puffer-terminal/maintenance/update.log，代理日志使用 journalctl -u puffer-terminal-update.service。

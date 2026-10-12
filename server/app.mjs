@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { selfUpdater } from './self-update.mjs';
 import { exportMigration, inspectMigration, importMigration, emptyTarget } from './migration.mjs';
 import { isIP } from 'node:net';
 import fs from 'node:fs/promises';
@@ -26,6 +27,7 @@ export async function createTerminal(options) {
   }
   origin = validateOrigin(origin);
   if (!directHttp && !['127.0.0.1', 'localhost', '::1'].includes(host) && new URL(origin).protocol !== 'https:') throw Error('公网监听需要 HTTPS 站点地址');
+  const updater = selfUpdater({directory:options.maintenanceDirectory || process.env.HETUN_TERMINAL_MAINTENANCE, revision:options.revision || process.env.HETUN_TERMINAL_REVISION || '', fetcher:options.updateFetch});
   const store = await openStore(root), sessions = new Map(), limits = new Map();
   const secure = () => origin.startsWith('https:');
   const cookie = (value, maxAge = 28800) => 'puffer_session=' + value + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (secure() ? '; Secure' : '');
@@ -108,7 +110,7 @@ export async function createTerminal(options) {
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.0' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.1' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -129,9 +131,12 @@ export async function createTerminal(options) {
     }
     if (r.startsWith('/api/')) {
       readyAdmin(req, m !== 'GET');
+      if (r === '/api/self-update' && m === 'GET') return json(res,200,await updater.status());
+      if (r === '/api/self-update/check' && m === 'POST') return json(res,200,await updater.check());
+      if (r === '/api/self-update/install' && m === 'POST') { const b=await body(req); const job=await updater.queue(b.revision); store.audit('请求终端 Git 更新',job.revision); await store.commit(); return json(res,202,job); }
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.0' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.1' });
       }
       if(r==='/api/integrations' && m==='GET') {
         let deployment=null;

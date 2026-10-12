@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Puffer Terminal update requests
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=10s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Puffer Terminal fixed-purpose updater
+After=docker.service network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/puffer-terminal-maintenance
+TimeoutStartSec=1800
+UMask=0077

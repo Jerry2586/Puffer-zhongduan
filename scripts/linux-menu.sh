@@ -104,6 +104,7 @@ write_config() {
   local temp
   install -d -m 0700 "$CONFIG_DIR" || return 1
   temp=$(mktemp "$CONFIG_DIR/.env.XXXXXX") || return 1
+  prepare_maintenance || return 1
   deployment_settings
   printf 'DOMAIN=%s\nACME_EMAIL=%s\nMODE=%s\nLOCAL_PORT=%s\nSOURCE_DIR=%s\nSTATE_DIR=%s\nCADDY_DIR=%s\nTERMINAL_IMAGE=%s\nREVISION=%s\nBIND_ADDRESS=%s\nDIRECT_HTTP=%s\nPUBLIC_ORIGIN=%s\n' "$DOMAIN" "$ACME_EMAIL" "$MODE" "$LOCAL_PORT" "$SOURCE_DIR" "$STATE_DIR" "$CADDY_DIR" "$TERMINAL_IMAGE" "$REVISION" "$BIND_ADDRESS" "$DIRECT_HTTP" "$PUBLIC_ORIGIN" >"$temp" || return 1
   # 所有输入经校验且没有需要 shell 转义的字符，兼容 Compose --env-file。
@@ -172,10 +173,37 @@ port_check() {
 }
 start_app() {
   load_config
+  write_config
   compose build terminal
   up
   wait_health || die '服务启动失败，请查看 logs。'
+  install_menu
   show_access
+}
+prepare_maintenance() {
+  [[ ! -L /var/lib/puffer-terminal/maintenance ]] || return 1
+  install -d -o root -g 1000 -m 1770 /var/lib/puffer-terminal/maintenance
+}
+install_maintenance() {
+  prepare_maintenance
+  install -m 0755 "$SOURCE_DIR/scripts/maintenance.sh" /usr/local/lib/puffer-terminal-maintenance
+  install -m 0644 "$SOURCE_DIR/deploy/puffer-terminal-update.service" /etc/systemd/system/puffer-terminal-update.service
+  install -m 0644 "$SOURCE_DIR/deploy/puffer-terminal-update.timer" /etc/systemd/system/puffer-terminal-update.timer
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
+    systemctl daemon-reload
+    systemctl enable --now puffer-terminal-update.timer
+  else
+    say '系统未运行 systemd；请通过 sudo hetun update 更新。'
+  fi
+}
+remove_maintenance() {
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
+    systemctl disable --now puffer-terminal-update.timer || true
+    systemctl stop puffer-terminal-update.service || true
+  fi
+  rm -f -- /etc/systemd/system/puffer-terminal-update.service /etc/systemd/system/puffer-terminal-update.timer /usr/local/lib/puffer-terminal-maintenance
+  if [[ -d /run/systemd/system ]]; then systemctl daemon-reload; fi
+  rm -f -- /var/lib/puffer-terminal/maintenance/agent.json /var/lib/puffer-terminal/maintenance/request
 }
 install_menu() {
   local menu_file
@@ -183,6 +211,7 @@ install_menu() {
   install -m 0755 "$SOURCE_DIR/scripts/linux-menu.sh" "$menu_file"
   mv -f "$menu_file" /usr/local/bin/puffer-terminal
   ln -sfn /usr/local/bin/puffer-terminal /usr/local/bin/hetun
+  install_maintenance
 }
 show_access() {
   if [[ "$MODE" == direct ]]; then
@@ -265,16 +294,18 @@ backup_app() {
   say "备份已保存：$archive（包括签名私钥，请妥善保管）"
 }
 update_app() {
+  local update_lock
+  exec {update_lock}>/run/lock/puffer-terminal-update.lock
+  flock -n "$update_lock" || die '已有更新正在执行。'
   load_config
   local old_source=$SOURCE_DIR old_revision=$REVISION old_image=$TERMINAL_IMAGE old_config
   resolve_source "${HETUN_REF:-main}"
-  [[ "$RESOLVED_SHA" != "$REVISION" ]] || { say '仓库版本没有变化。'; return; }
+  [[ "$RESOLVED_SHA" != "$REVISION" ]] || { write_config; up; wait_health; install_menu; say '仓库版本没有变化，更新服务已修复。'; return; }
   backup_app
   old_config=$(mktemp -d "$CONFIG_DIR/.rollback.XXXXXX")
   cp "$ENV_FILE" "$COMPOSE_FILE" "$old_config/"
   SOURCE_DIR=$RESOLVED_SOURCE REVISION=$RESOLVED_SHA TERMINAL_IMAGE=puffer-terminal:$RESOLVED_SHA
-  write_config
-  if compose config -q && compose build --pull terminal && up && wait_health; then
+  if write_config && compose config -q && compose build --pull terminal && up && wait_health; then
     install_menu
     rm -rf -- "$old_config"
     say "更新成功：$old_revision → $REVISION"
@@ -466,12 +497,30 @@ reset_password() {
 }
 uninstall_app() {
   load_config
-  local answer
-  read -r -p '输入 UNINSTALL 确认卸载河豚终端容器（保留数据与源码，不删除 Docker）：' answer
+  local answer choice
+  printf '\n  卸载河豚终端\n  1 卸载服务，保留数据与备份\n  2 完全卸载，删除终端数据与源码（保留备份）\n  0 返回\n'
+  read -r -p '请选择：' choice
+  case "$choice" in 1|2) ;; *) return;; esac
+  read -r -p '输入 UNINSTALL 确认：' answer
   [[ "$answer" == UNINSTALL ]] || return
+  if [[ "$choice" == 2 ]]; then
+    read -r -p '再次输入 DELETE 确认删除终端数据（备份保留）：' answer
+    [[ "$answer" == DELETE ]] || return
+  fi
+  local update_lock
+  exec {update_lock}>/run/lock/puffer-terminal-update.lock
+  flock -n "$update_lock" || die '正在更新，请完成后卸载。'
   backup_app
+  remove_maintenance
   compose --profile tls --profile tunnel down
-  say "容器已卸载，数据保留：$DATA_BASE；源码：$APP_BASE；再次运行 puffer-terminal start 恢复。"
+  if [[ "$choice" == 2 ]]; then
+    [[ "$APP_BASE" == /opt/puffer-terminal && "$CONFIG_DIR" == /etc/puffer-terminal && "$DATA_BASE" == /var/lib/puffer-terminal ]] || die '卸载路径校验失败。'
+    rm -rf -- /opt/puffer-terminal /etc/puffer-terminal /var/lib/puffer-terminal
+    rm -f -- /usr/local/bin/hetun /usr/local/bin/puffer-terminal
+    say "已完全卸载河豚终端；备份保留：$BACKUP_DIR；Docker 与其他站点保留。"
+  else
+    say "服务已卸载，数据保留：$DATA_BASE；执行 sudo hetun start 恢复。"
+  fi
 }
 menu_header() {
   printf '\n  河豚终端 v%s\n  ────────────────────────────────────\n' "$MENU_VERSION"
@@ -498,11 +547,11 @@ account_menu() {
 advanced_menu() {
   local choice action
   while true; do
-    printf '\n  更多管理\n  1 状态详情    2 服务日志    3 重启\n  4 备份        5 恢复备份    6 检查更新\n  7 启动        8 停止        9 卸载保留数据\n 10 高级域名   11 证书日志   12 Tunnel 日志\n 13 域名回滚    0 返回\n'
+    printf '\n  更多管理\n  1 状态详情    2 服务日志    3 重启\n  4 备份        5 恢复备份    6 检查更新\n  7 启动        8 停止        9 卸载管理\n 10 高级域名   11 证书日志   12 Tunnel 日志\n 13 域名回滚   14 在线更新    0 返回\n'
     read -r -p '请选择：' choice || return
     case "$choice" in
       1) action=status;; 2) action=logs;; 3) action=restart;; 4) action=backup;; 5) action=restore;; 6) action=check;;
-      7) action=start;; 8) action=stop;; 9) action=uninstall;; 10) action=advanced-domain;; 11) action=certificates;; 12) action=tunnel-logs;; 13) action=tunnel-rollback;; 0) return;; *) say '编号无效。';continue;;
+      7) action=start;; 8) action=stop;; 9) action=uninstall;; 10) action=advanced-domain;; 11) action=certificates;; 12) action=tunnel-logs;; 13) action=tunnel-rollback;; 14) action=update;; 0) return;; *) say '编号无效。';continue;;
     esac
     run_menu_action "$action"
   done
