@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.2.0
+MENU_VERSION=0.2.1
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
@@ -137,14 +137,14 @@ settings_prompt() {
   d=${d,,}
   if [[ -n "$d" ]]; then
     [[ ${#d} -le 253 && "$d" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$ ]] || die '域名无效，不要包含协议、端口或路径。'
-    say '1 自动 HTTPS（空闲 80/443）  2 已有网站反向代理  3 域名加端口直连'
+    say '1 自动 HTTPS（空闲 80/443）  2 已有网站反向代理'
     suggested=1
     if port_busy 80 || port_busy 443 || [[ -n $(ss -H -lun 'sport = :443') ]]; then
       suggested=2
       say '检测到已有网站占用 80/443，推荐共存模式 2。'
     fi
     read -r -p "选择模式 [$suggested]：" m
-    case ${m:-$suggested} in 1) MODE=standalone ;; 2) MODE=reverse-proxy ;; 3) MODE=direct ;; *) die '请选择 1、2 或 3。';; esac
+    case ${m:-$suggested} in 1) MODE=standalone ;; 2) MODE=reverse-proxy ;; *) die '请选择 1 或 2；不占用 80/443 的自动绑定请用 sudo hetun domain。';; esac
   else
     MODE=direct
     say '无域名模式：使用 http://服务器IP:端口 直接访问，不占用 80/443。'
@@ -218,7 +218,8 @@ show_access() {
     local address
     address=$(hostname -I 2>/dev/null | awk '{print $1}')
     address=${address:-服务器IP}
-    say "后台地址：http://${DOMAIN:-$address}:$LOCAL_PORT"
+    say "临时访问：http://$address:$LOCAL_PORT"
+    [[ -z "$DOMAIN" ]] || say "域名 $DOMAIN 尚未完成无端口 HTTPS 绑定，请执行 sudo hetun domain。"
     say "外网请使用服务器公网 IP，安全组放行 TCP $LOCAL_PORT。可稍后通过 hetun domain 绑定域名和 HTTPS。"
   else
     say "后台地址：https://$DOMAIN"
@@ -523,13 +524,36 @@ uninstall_app() {
   fi
 }
 menu_header() {
-  printf '\n  河豚终端 v%s\n  ────────────────────────────────────\n' "$MENU_VERSION"
+  local blue='' reset='' latest_backup health
+  if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then blue=$'\033[1;34m'; reset=$'\033[0m'; fi
+  printf '\n%s  ╔════════════════════════════════════════════════════╗\n  ║           河豚终端 · 管理中心                      ║\n  ╚════════════════════════════════════════════════════╝%s\n' "$blue" "$reset"
+  printf '  菜单版本：%s    安装目录：%s\n' "$MENU_VERSION" "$APP_BASE"
   if [[ -f "$ENV_FILE" ]]; then
     load_config
-    if curl -fsS --max-time 2 "http://127.0.0.1:$LOCAL_PORT/healthz" >/dev/null; then printf '  状态：运行正常\n'; else printf '  状态：未启动或正在启动\n'; fi
-    if [[ "$MODE" == direct ]]; then printf '  地址：http://%s:%s\n' "${DOMAIN:-服务器公网IP}" "$LOCAL_PORT"; else printf '  地址：https://%s\n' "$DOMAIN"; fi
-  else printf '  状态：尚未安装\n'; fi
+    health=$(curl -fsS --max-time 2 "http://127.0.0.1:$LOCAL_PORT/healthz" 2>/dev/null) || health=''
+    if [[ -n "$health" ]]; then printf '  运行状态：正常（本机健康检查通过）\n'; else printf '  运行状态：未启动或检查失败\n'; fi
+    printf '  部署模式：%s    安装版本：%.12s\n' "$MODE" "$REVISION"
+    if [[ "$MODE" == direct ]]; then
+      printf '  访问地址：http://服务器公网IP:%s（临时直连）\n' "$LOCAL_PORT"
+      [[ -z "$DOMAIN" ]] || printf '  域名状态：%s 尚未完成 HTTPS 绑定\n' "$DOMAIN"
+    else
+      printf '  终端地址：https://%s\n  域名状态：选择 12 检查公网 HTTPS 与终端身份\n' "$DOMAIN"
+    fi
+    printf '  更新状态：选择 9 联网检查，选择 10 备份后更新\n'
+    latest_backup=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' -printf '%f\n' 2>/dev/null | sort | tail -n 1) || latest_backup=''
+    printf '  最近备份：%s\n' "${latest_backup:-尚无备份}"
+  else printf '  运行状态：尚未安装，请选择 1\n'; fi
 }
+diagnose_domain() {
+  load_config
+  show_access
+  if [[ -z "$DOMAIN" || "$MODE" == direct ]]; then
+    say '尚未绑定无端口 HTTPS 域名。执行 sudo hetun domain，输入域名完成自动绑定。'
+    return 1
+  fi
+  compose exec -T terminal node scripts/diagnose-domain.mjs "$DOMAIN"
+}
+
 run_menu_action() {
   trap ':' INT
   if bash "${BASH_SOURCE[0]}" "$1"; then printf '\n操作结束。\n'; else printf '\n操作未完成，请查看上方提示。\n'; fi
@@ -547,22 +571,28 @@ account_menu() {
 advanced_menu() {
   local choice action
   while true; do
-    printf '\n  更多管理\n  1 状态详情    2 服务日志    3 重启\n  4 备份        5 恢复备份    6 检查更新\n  7 启动        8 停止        9 卸载管理\n 10 高级域名   11 证书日志   12 Tunnel 日志\n 13 域名回滚   14 在线更新    0 返回\n'
+    printf '\n  备份与高级工具\n  1 创建备份    2 恢复备份\n  3 高级域名    4 证书日志\n  5 Tunnel 日志 6 域名回滚\n  0 返回\n'
     read -r -p '请选择：' choice || return
     case "$choice" in
-      1) action=status;; 2) action=logs;; 3) action=restart;; 4) action=backup;; 5) action=restore;; 6) action=check;;
-      7) action=start;; 8) action=stop;; 9) action=uninstall;; 10) action=advanced-domain;; 11) action=certificates;; 12) action=tunnel-logs;; 13) action=tunnel-rollback;; 14) action=update;; 0) return;; *) say '编号无效。';continue;;
+      1) action=backup;; 2) action=restore;; 3) action=advanced-domain;; 4) action=certificates;;
+      5) action=tunnel-logs;; 6) action=tunnel-rollback;; 0) return;; *) say '编号无效。'; continue;;
     esac
     run_menu_action "$action"
   done
 }
 menu() {
-  local choice
+  local choice action
   while true; do
     menu_header
-    printf '\n  1 安装 / 更新\n  2 绑定 / 修改域名\n  3 查看账号 / 修改密码\n  4 更多管理\n  0 退出\n\n'
+    printf '\n   1. 安装与环境准备\n   2. 查看系统状态\n   3. 启动服务\n   4. 停止服务\n   5. 重启服务\n   6. 查看服务日志\n   7. 绑定 / 修改域名（自动 HTTPS）\n   8. 查看初始账号 / 修改密码\n   9. 检查 Git 更新\n  10. 在线更新（自动备份）\n  11. 备份 / 恢复与高级工具\n  12. 域名 HTTPS 诊断\n  13. 卸载管理\n   0. 退出\n\n'
     read -r -p '请选择：' choice || return
-    case "$choice" in 1) run_menu_action deploy;; 2) run_menu_action domain;; 3) account_menu;; 4) advanced_menu;; 0) return;; *) say '请选择 0–4。';; esac
+    case "$choice" in
+      1) action=deploy;; 2) action=status;; 3) action=start;; 4) action=stop;; 5) action=restart;; 6) action=logs;;
+      7) action=domain;; 8) account_menu; continue;; 9) action=check;; 10) action=update;;
+      11) advanced_menu; continue;; 12) action=doctor;; 13) action=uninstall;; 0) return;;
+      *) say '请选择 0–13。'; continue;;
+    esac
+    run_menu_action "$action"
   done
 }
 
@@ -571,7 +601,7 @@ main() {
   case ${1:-menu} in
     deploy) if [[ -f "$ENV_FILE" ]]; then update_app; else install_app; fi ;;
     install) install_app ;; menu) menu ;; status) load_config; compose --profile tls --profile tunnel ps; show_access ;;
-    check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
+    doctor) diagnose_domain ;; check) check_update ;; restart) load_config; compose restart terminal; wait_health ;;
     update) update_app ;; backup) backup_app ;; restore) restore_app ;; domain) change_domain ;;
     advanced-domain) advanced_domain ;; tunnel-rollback) tunnel_rollback ;;
     tunnel-logs) load_config; compose --profile tunnel logs --tail=100 tunnel ;;
@@ -579,7 +609,7 @@ main() {
     start) start_app ;; stop) load_config; compose --profile tls --profile tunnel stop ;;
     certificates) load_config; compose --profile tls logs --tail=100 proxy ;;
     logs) load_config; compose logs --tail=100 -f terminal ;;
-    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|tunnel-rollback|tunnel-logs]' ;;
+    uninstall) uninstall_app ;; --help) echo 'puffer-terminal [menu|deploy|install|status|doctor|check|update|restart|backup|restore|domain|credentials|reset-password|start|stop|logs|uninstall|advanced-domain|tunnel-rollback|tunnel-logs]' ;;
     *) die '未知命令，使用 --help 查看。' ;;
   esac
 }

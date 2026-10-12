@@ -4,7 +4,7 @@ import os from 'node:os';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import {prepareTunnel,rollbackTunnel,verifyTunnel,completeTunnel} from '../server/cloudflare.mjs';
+import {prepareTunnel,rollbackTunnel,verifyTunnel,completeTunnel,diagnoseDomain} from '../server/cloudflare.mjs';
 await fs.mkdir(process.env.HETUN_TEST_ROOT||os.tmpdir(),{recursive:true});
 
 async function fixture(t,fail=false,paginated=false){const root=await fs.mkdtemp(path.join(process.env.HETUN_TEST_ROOT||os.tmpdir(),'hetun-cf-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));let records=[{id:'old',type:'A',name:'sq.example.com',content:'192.0.2.1',ttl:300,proxied:false}],deleted=false;const calls=[];
@@ -30,3 +30,16 @@ test('公网核验必须匹配签名公钥与 HTTPS issuer，其他站点不会�
 });
 
 test('DNS 分页中的地址也纳入绑定与回滚',async t=>{const x=await fixture(t,false,true);await prepareTunnel(x.root,'sq.example.com','fake-private-api-token',x.fetchImpl);const j=JSON.parse(await fs.readFile(path.join(x.root,'deployment/pending.json'),'utf8'));assert.equal(j.previous.length,1);assert.equal(j.previous[0].id,'old');await rollbackTunnel(x.root,'fake-private-api-token',x.fetchImpl);assert.equal(x.records[0].content,'192.0.2.1');});
+
+test('域名诊断区分525、错误站点和正确HTTPS，不修改绑定状态',async t=>{
+ const x=await fixture(t);await fs.mkdir(path.join(x.root,'keys'));
+ const publicKey=crypto.generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'pem'});
+ await fs.writeFile(path.join(x.root,'keys/public.pem'),publicKey);
+ const keyId=crypto.createHash('sha256').update(publicKey).digest('hex').slice(0,16);
+ await assert.rejects(diagnoseDomain(x.root,'sq.example.com',{fetchImpl:async()=>new Response('failed',{status:525})}),/525/);
+ await assert.rejects(diagnoseDomain(x.root,'sq.example.com',{fetchImpl:async()=>Response.json({publicKey:'other',keyId})}),/身份不匹配/);
+ await assert.rejects(diagnoseDomain(x.root,'sq.example.com',{fetchImpl:async()=>Response.json({publicKey,keyId,issuer:'http://sq.example.com:1025'})}),/公网地址配置不一致/);
+ const result=await diagnoseDomain(x.root,'sq.example.com',{fetchImpl:async(url,options)=>{assert.equal(url,'https://sq.example.com/v1/license/public-key');assert.equal(options.redirect,'error');return Response.json({publicKey,keyId,issuer:'https://sq.example.com'});}});
+ assert.equal(result.url,'https://sq.example.com');assert.equal(result.verified,true);
+ await assert.rejects(fs.access(path.join(x.root,'deployment/status.json')));
+});

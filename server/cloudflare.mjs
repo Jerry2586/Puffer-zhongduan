@@ -63,3 +63,19 @@ export async function completeTunnel(root){
   const folder=path.join(root,'deployment'),j=JSON.parse(await fs.readFile(path.join(folder,'pending.json'),'utf8'));
   await fs.writeFile(path.join(folder,'tunnel.json'),JSON.stringify({domain:j.domain,tunnelId:j.tunnelId,accountId:j.accountId,zoneId:j.zoneId}),{mode:0o600});await fs.unlink(path.join(folder,'pending.json'));
 }
+
+// Read-only public route check. No DNS changes, no persisted success marker.
+export async function diagnoseDomain(root,domain,{fetchImpl=fetch}={}){
+  domain=hostname(domain);
+  const publicKey=await fs.readFile(path.join(root,'keys/public.pem'),'utf8');
+  const keyId=crypto.createHash('sha256').update(publicKey).digest('hex').slice(0,16);
+  let r;
+  try { r=await fetchImpl('https://'+domain+'/v1/license/public-key',{signal:AbortSignal.timeout(10000),redirect:'error',headers:{'Cache-Control':'no-cache'}}); }
+  catch { throw Error('HTTPS 无法连接：请检查域名解析、公网证书和 Tunnel 出站网络；可用 sudo hetun domain 重新绑定。'); }
+  if(r.status===525)throw Error('Cloudflare 525：Cloudflare 与源站 TLS 握手失败。请用 sudo hetun domain 切换自动 Tunnel 绑定，或修复已有代理的源站证书；仅修改 DNS 不会完成 HTTPS 绑定。');
+  if(!r.ok)throw Error('公网检查返回 HTTP '+r.status+'；请检查域名路由、Tunnel 日志与访问策略。');
+  let data;try{data=await r.json();}catch{throw Error('域名返回的不是终端接口；请检查是否指向了其他站点。');}
+  if(data.keyId!==keyId||data.publicKey!==publicKey)throw Error('域名指向另一终端或站点，当前终端身份不匹配。');
+  if(data.issuer!=='https://'+domain)throw Error('终端公网地址配置不一致；请通过 sudo hetun domain 重新绑定。');
+  return {domain,url:'https://'+domain,keyId,verified:true};
+}

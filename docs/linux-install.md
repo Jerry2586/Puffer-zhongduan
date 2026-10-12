@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/Jerry2586/Puffer-zhongduan/main/ins
 
 支持自动准备 Debian/Ubuntu、RPM 9/10 系列环境；其他发行版请先安装 Docker Engine 和 Compose 插件。复用已有 Docker，环境、配置、运行数据与源码分离。
 
-## 四项管理菜单
+## Linux 管理菜单
 
 ~~~bash
 sudo hetun
@@ -23,9 +23,9 @@ sudo hetun credentials
 sudo hetun reset-password
 ~~~
 
-主菜单：1 安装/更新，2 绑定/修改域名，3 账号/密码，4 更多管理，0 退出。
+主菜单：1 安装、2 状态、3 启动、4 停止、5 重启、6 日志、7 绑定域名、8 账号密码、9 检查更新、10 在线更新、11 备份与高级工具、12 HTTPS 诊断、13 卸载、0 退出。顶部显示本机健康检查、安装版本、域名地址与最近备份。
 账号子菜单：1 查看初始凭据，2 重置密码。首次改密后初始明文文件被删除，可以使用重置密码设置新密码。密码输入两遍，可自行设置长度，直接回车生成随机密码；确认后短暂停止并重启服务，旧登录会话失效。
-更多管理提供状态、日志、重启、备份、恢复、检查更新、启停、卸载、高级域名模式、证书日志、Tunnel 日志和绑定回滚。每次操作完成按回车返回。旧命令 puffer-terminal 保留。
+备份与高级工具提供备份、恢复、高级域名模式、证书日志、Tunnel 日志和绑定回滚。每次操作完成按回车返回。旧命令 puffer-terminal 保留。
 
 ## 域名自动 HTTPS
 
@@ -35,7 +35,7 @@ API Token 需要目标账号的 Cloudflare Tunnel 编辑、目标区域的 Zone 
 
 公网验证是绑定时的检查结果，页面展示检查时间，不代表持续在线监控。成功更换域名时旧 Tunnel 资源不会自动删除，可在 Cloudflare 核对后自行清理。输入 - 可以清除当前域名，切回 IP 直连；远端旧资源保留。
 
-高级部署通过更多管理或 sudo hetun advanced-domain 进入：独立 Caddy 自动 HTTPS 要求正确 DNS、公网 80/443 可用；已有宝塔/Nginx 共存模式由现有站点提供证书和代理；域名加端口直连为 HTTP。代理应保留 Host，上传上限至少 128m，外部域名/协议须与终端配置一致。HTTP 直连不加密网络传输。
+高级部署通过备份与高级工具或 sudo hetun advanced-domain 进入：独立 Caddy 自动 HTTPS 要求正确 DNS、公网 80/443 可用；已有宝塔/Nginx 共存模式由现有站点提供证书和代理；无域名时允许 IP 加端口临时访问；新域名绑定不再提供 HTTP 域名加端口。旧直连配置需执行 sudo hetun domain 迁移。sudo hetun doctor 会核验公网 HTTPS 与当前终端签名身份，发现 525 或错误站点时返回失败。代理应保留 Host，上传上限至少 128m，外部域名/协议须与终端配置一致。HTTP 直连不加密网络传输。
 
 ## 产品对接与页面迁移
 
