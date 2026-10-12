@@ -214,7 +214,7 @@ install_app() {
   [[ ! -f "$ENV_FILE" ]] || die '已经安装，请使用 update 或 domain。'
   prerequisites
   local requested_domain password
-  DOMAIN= ACME_EMAIL=
+  DOMAIN='' ACME_EMAIL=''
   read_domain
   requested_domain=$NEW_DOMAIN
   read -r -s -p '管理员密码（回车自动生成）：' password
@@ -399,7 +399,7 @@ change_domain() {
   read_domain
   if [[ -n "$NEW_DOMAIN" ]]; then backup_app; bind_tunnel "$NEW_DOMAIN"; else
     backup_app
-    DOMAIN= MODE=direct ACME_EMAIL=
+    DOMAIN='' MODE=direct ACME_EMAIL=''
     write_config
     up
     wait_health || die 'IP 访问模式未正常启动，请查看日志。'

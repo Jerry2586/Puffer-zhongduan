@@ -23,7 +23,7 @@ write_config
 compose config -q
 compose --profile tls config -q
 compose --profile tunnel config -q
-docker run --rm cloudflare/cloudflared:2026.9.1 tunnel run --help | grep -q -- '--token-file'
+docker run --rm cloudflare/cloudflared:2026.9.1 tunnel run --help | grep -- '--token-file' >/dev/null
 compose build --pull terminal
 up
 wait_health
