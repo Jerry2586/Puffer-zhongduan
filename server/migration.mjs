@@ -1,3 +1,4 @@
+import { validateCommunications } from './communications.mjs';
 import { validateAuthority } from './authority.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -59,6 +60,7 @@ export function validateSnapshot(value, suppliedFiles) {
   if(value.format!=='hetun-migration'||value.version!==1||s?.schemaVersion!==1||!s.settings||!Number.isInteger(s.settings.offlineDays)||s.settings.offlineDays<1||s.settings.offlineDays>30||!Number.isInteger(s.settings.checkHours)||s.settings.checkHours<1||s.settings.checkHours>s.settings.offlineDays*24)throw error('迁移数据版本或策略无效');
   for(const list of lists)if(!Array.isArray(s[list])||s[list].some(x=>!x||typeof x.id!=='string')||new Set(s[list].map(x=>x.id)).size!==s[list].length)throw error('迁移业务列表无效：'+list);
   validateAuthority(s.authority);
+  validateCommunications(s);
   const products=['packer','theme-center','operations'];
   const string=v=>typeof v==='string',date=v=>string(v)&&Number.isFinite(Date.parse(v));
   if(!date(value.createdAt)||!string(value.origin))throw error('迁移来源信息无效');

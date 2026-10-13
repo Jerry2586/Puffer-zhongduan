@@ -1,3 +1,4 @@
+import { initializeCommunications } from './communications.mjs';
 import { initializeAuthority } from './authority.mjs';
 import { initializeCenter } from './product-center.mjs';
 import fs from 'node:fs/promises';
@@ -38,6 +39,7 @@ export async function openStore(root) {
   }
   if (state.schemaVersion !== 1) throw new Error('数据版本不兼容，禁止覆盖');
   initializeCenter(state);
+  initializeCommunications(state);
   initializeAuthority(state);
   let admin;
   try { admin = JSON.parse(await fs.readFile(path.join(root, 'admin.json'), 'utf8')); }

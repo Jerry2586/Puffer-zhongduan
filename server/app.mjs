@@ -1,3 +1,4 @@
+import { saveCommunication, changeCommunication, communicationFeed, acknowledgeCommunication, updateDistribution } from './communications.mjs';
 import { initializeAuthority, migrating, identity, configuration, startMigration, verifyDestination, finishMigration, acknowledge, progress, endpoint } from './authority.mjs';
 import { exportMigrationFile, receiveMigration, inspectMigrationFile } from './migration-stream.mjs';
 import { createReadStream } from 'node:fs';
@@ -121,7 +122,7 @@ export async function createTerminal(options) {
     if(r==='/v1/terminal-config'&&m==='GET'){authorizedBinding(store,req);return json(res,200,configuration(store,externalOrigin));}
     if(r==='/v1/terminal-config/ack'&&m==='POST'){const {binding}=authorizedBinding(store,req);const result=acknowledge(store,binding,await body(req),externalOrigin);await store.commit();return json(res,200,result);}
     if(migrating(store)&&m==='POST'&&['/v1/jobs','/v1/worker/claim'].includes(r))throw failure('终端迁移中，暂不接受新构建任务',503);
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.2' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.3' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -143,6 +144,13 @@ export async function createTerminal(options) {
     if (r.startsWith('/api/')) {
       readyAdmin(req, m !== 'GET');
       if(migrating(store)&&m!=='GET'&&!r.startsWith('/api/migration/'))throw failure('终端迁移中，业务修改暂时冻结；可继续查看或取消迁移',409);
+      const notificationRoute=r.match(/^\/api\/(announcements|update-pushes)(?:\/([a-f0-9-]{36}))?$/);
+      if(notificationRoute) {
+        const kind=notificationRoute[1]==='update-pushes'?'update':'announcement', id=notificationRoute[2];
+        if(m==='POST' && !id){const value=saveCommunication(store,kind,await body(req));await store.commit();return json(res,201,value);}
+        if(m==='PATCH' && id){const b=await body(req),value=b.status?changeCommunication(store,kind,id,b.status):saveCommunication(store,kind,b,id);await store.commit();return json(res,200,value);}
+        if(m==='GET'){const list=kind==='update'?store.state.updatePushes:store.state.announcements;const items=id?[find(list,id,'通知')]:list;return json(res,200,{items,receipts:store.state.deliveryReceipts.filter(x=>items.some(i=>i.id===x.notificationId))});}
+      }
       if(r==='/api/migration/status'&&m==='GET')return json(res,200,progress(store,externalOrigin));
       if(r==='/api/migration/start'&&m==='POST'){const a=startMigration(store,await body(req));store.audit('开始服务器迁移',a.migrationId);await store.commit();return json(res,200,progress(store,externalOrigin));}
       if(r==='/api/migration/cancel'&&m==='POST'){if(!migrating(store))throw failure('当前没有进行中的迁移',409);const a=store.state.authority;Object.assign(a,{phase:'cancelled',revision:a.revision+1,message:'迁移已取消',destination:null});store.audit('取消迁移',a.migrationId);await store.commit();return json(res,200,progress(store,externalOrigin));}
@@ -181,14 +189,14 @@ export async function createTerminal(options) {
       }
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.2' });
+        return json(res, 200, { announcements:s.announcements, updatePushes:s.updatePushes, deliveryReceipts:s.deliveryReceipts, customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.3' });
       }
       if(r==='/api/integrations' && m==='GET') {
         let deployment=null;
         try{const status=JSON.parse(await fs.readFile(path.join(store.root,'deployment/status.json'),'utf8'));if(status.keyId===sha(store.publicKey).slice(0,16)&&externalOrigin==='https://'+status.domain&&status.verified===true)deployment={verified:true,domain:status.domain,checkedAt:status.checkedAt};}catch(e){if(e.code!=='ENOENT'&&!(e instanceof SyntaxError))throw e;}
         const probe=Buffer.from('hetun-terminal-self-check');
         const signature=crypto.sign(null,probe,store.privateKey);
-        return json(res,200,{deployment,origin:externalOrigin,keyId:sha(store.publicKey).slice(0,16),signatureValid:crypto.verify(null,probe,store.publicKey,signature),products:PRODUCTS.map(product=>({product,bindings:store.state.bindings.filter(b=>b.product===product).length,lastSeenAt:store.state.bindings.filter(b=>b.product===product).map(b=>b.lastSeenAt).filter(Boolean).sort().at(-1)||null,publishedVersions:store.state.releases.filter(v=>v.product===product&&v.kind==='software'&&v.status==='published').length})),endpoints:{records:'/v1/records',templates:'/v1/templates',productCatalog:'/v1/product-catalog',publicKey:'/v1/license/public-key',activate:'/v1/license/activate',check:'/v1/license/check',updates:'/v1/updates'},emptyTarget:emptyTarget(store)});
+        return json(res,200,{deployment,origin:externalOrigin,keyId:sha(store.publicKey).slice(0,16),signatureValid:crypto.verify(null,probe,store.publicKey,signature),products:PRODUCTS.map(product=>({product,bindings:store.state.bindings.filter(b=>b.product===product).length,lastSeenAt:store.state.bindings.filter(b=>b.product===product).map(b=>b.lastSeenAt).filter(Boolean).sort().at(-1)||null,publishedVersions:store.state.releases.filter(v=>v.product===product&&v.kind==='software'&&v.status==='published').length})),endpoints:{records:'/v1/records',templates:'/v1/templates',productCatalog:'/v1/product-catalog',publicKey:'/v1/license/public-key',activate:'/v1/license/activate',check:'/v1/license/check',updates:'/v1/updates',notifications:'/v1/notifications',notificationAck:'/v1/notifications/ack'},emptyTarget:emptyTarget(store)});
       }
       if(r==='/api/migration/export' && m==='POST') {
         const b=await body(req);
@@ -271,7 +279,9 @@ export async function createTerminal(options) {
     if (r === '/v1/records' && m === 'GET') {const {license}=authorizedBinding(store,req);return json(res,200,{records:store.state.productRecords.filter(x=>x.licenseId===license.id).slice(0,100)});}
     if (r === '/v1/templates' && m === 'GET') {const {binding}=authorizedBinding(store,req);if(!['theme-center','packer'].includes(binding.product))throw failure('请激活主题中心或打包器',403);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.kind==='theme').map(publicRelease)}));}
     if (r === '/v1/product-catalog' && m === 'GET') {const {license,binding}=authorizedBinding(store,req);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,product:binding.product,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.product===binding.product&&(x.kind!=='product-source'||license.permissions.sourceDownload)).map(publicRelease)}));}
-    if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'); authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', externalOrigin)); }
+    if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'), {license,binding}=authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', externalOrigin, updateDistribution(store,license,binding))); }
+    if(r==='/v1/notifications' && m==='GET') {const {license,binding}=authorizedBinding(store,req);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,product:binding.product,activationId:binding.id,checkedAt:now(),items:communicationFeed(store,license,binding)}));}
+    if(r==='/v1/notifications/ack' && m==='POST') {const {license,binding}=authorizedBinding(store,req),receipt=acknowledgeCommunication(store,license,binding,await body(req));await store.commit();return json(res,200,{ok:true,status:receipt.status});}
     if (r === '/v1/installations/report' && m === 'POST') { const { license, binding } = authorizedBinding(store, req), b = await body(req); if (!VERSION.test(b.version || '') || !['current', 'updating', 'failed'].includes(b.updateStatus)) throw failure('安装状态无效'); if(b.eventId) recordEvent(store,license,binding,{eventId:b.eventId,type:b.updateStatus==='failed'?'update-failed':b.updateStatus==='current'?'update-success':'update-check',version:b.version,occurredAt:b.occurredAt,details:{message:String(b.error||'').slice(0,300)}}); Object.assign(binding, { version: b.version, updateStatus: b.updateStatus, updateError: String(b.error || '').slice(0, 300), lastSeenAt: now() }); await store.commit(); return json(res, 200, { ok: true }); }
     if (r === '/v1/catalog' && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); return json(res, 200, { releases: store.state.releases.filter(x => x.status === 'published' && x.product==='client' && x.kind !== 'software' && (x.kind !== 'client-source' || license.permissions.sourceDownload)).map(publicRelease), permissions: license.permissions }); }
     const cr = r.match(/^\/v1\/releases\/([a-f0-9-]{36})\/download$/);

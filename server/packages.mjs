@@ -51,11 +51,11 @@ export async function createRelease(store, input, bytes) {
   store.state.releases.unshift(release); history(store,m.kind==='theme'?'templates':m.product,'上传版本草稿',id,m.name+' '+m.version); store.audit('上传版本草稿', id); await store.commit();
   return publicRelease(release);
 }
-export function updateManifest(store, product, current, platform, arch, channel, issuer) {
+export function updateManifest(store, product, current, platform, arch, channel, issuer, distribution) {
   if (!PRODUCTS.includes(product) || !VERSION.test(current || '') || !PLATFORMS.includes(platform) || !['any', 'x64', 'arm64'].includes(arch) || !['stable', 'beta'].includes(channel)) throw failure('更新检查参数无效');
-  const versions = store.state.releases.filter(r => r.status === 'published' && ['software','installer'].includes(r.kind) && r.product === product && ['all', platform].includes(r.platform) && ['any', arch].includes(r.arch) && r.channel === channel).sort((a, b) => compareVersions(b.version, a.version));
-  const latest = versions[0];
-  return sign(store, { schemaVersion: 1, issuer, product, currentVersion: current, checkedAt: now(), updateAvailable: !!latest && compareVersions(latest.version, current) > 0, force: !!latest && compareVersions(latest.version, current) > 0 && (latest.force || compareVersions(current, latest.minVersion) < 0), release: latest ? publicRelease(latest) : null });
+  const versions = store.state.releases.filter(r => r.status === 'published' && ['software','installer'].includes(r.kind) && r.product === product && ['all', platform].includes(r.platform) && ['any', arch].includes(r.arch) && r.channel === channel && (!distribution || !distribution.managed.has(r.id) || distribution.releaseIds.has(r.id))).sort((a, b) => compareVersions(b.version, a.version));
+  const latest = versions[0], push=latest && distribution?.pushes.find(x=>x.releaseId===latest.id);
+  return sign(store, { schemaVersion: 1, issuer, product, currentVersion: current, checkedAt: now(), updateAvailable: !!latest && compareVersions(latest.version, current) > 0, force: !!latest && compareVersions(latest.version, current) > 0 && (latest.force || push?.force || compareVersions(current, latest.minVersion) < 0), pushId:push?.id || null, release: latest ? publicRelease(latest) : null });
 }
 export function createJob(store, b, owner = 'admin') {
   const source = store.state.releases.find(r => r.id === b.sourceId && r.kind === 'client-source' && r.status === 'published');
