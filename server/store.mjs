@@ -1,3 +1,5 @@
+import { initializeAuthority } from './authority.mjs';
+import { initializeCenter } from './product-center.mjs';
 import fs from 'node:fs/promises';
 import { recoverMigration } from './migration.mjs';
 import path from 'node:path';
@@ -24,6 +26,8 @@ export async function atomic(file, value) {
 }
 export async function openStore(root) {
   await recoverMigration(root);
+  // Transfer plaintext is never retained after a crashed migration or export.
+  for(const entry of await fs.readdir(root,{withFileTypes:true}).catch(e=>{if(e.code==='ENOENT')return [];throw e;}))if(entry.isDirectory()&&/^\.transfer-[A-Za-z0-9]+$/.test(entry.name)){const temporary=path.resolve(root,entry.name);if(path.dirname(temporary)!==path.resolve(root))throw Error('迁移临时目录越界');await fs.rm(temporary,{recursive:true,force:true});}
   for (const d of ['keys', 'files', 'logs']) await fs.mkdir(path.join(root, d), { recursive: true, mode: 0o700 });
   const file = path.join(root, 'data.json');
   let state;
@@ -33,6 +37,8 @@ export async function openStore(root) {
     state = { schemaVersion: 1, customers: [], licenses: [], bindings: [], releases: [], jobs: [], nodes: [], audit: [], settings: { offlineDays: 7, checkHours: 24 } };
   }
   if (state.schemaVersion !== 1) throw new Error('数据版本不兼容，禁止覆盖');
+  initializeCenter(state);
+  initializeAuthority(state);
   let admin;
   try { admin = JSON.parse(await fs.readFile(path.join(root, 'admin.json'), 'utf8')); }
   catch (e) {

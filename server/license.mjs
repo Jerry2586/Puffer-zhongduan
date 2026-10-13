@@ -1,8 +1,10 @@
+import { migrating, configuration } from './authority.mjs';
+import { policy } from './product-center.mjs';
 import crypto from 'node:crypto';
 import { domainToASCII } from 'node:url';
 import { failure, sha, now } from './store.mjs';
 export const PRODUCTS = ['theme-center', 'packer', 'operations'];
-export const PRODUCT_NAMES = { 'theme-center': '主题中心', packer: '打包器', operations: '运营中心', client: 'APP 客户端' };
+export const PRODUCT_NAMES = { 'theme-center': '主题中心', packer: '打包器', operations: '影视中心〔APP 后台〕', client: 'APP 客户端' };
 export const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?$/;
 export function compareVersions(a, b) {
   const [ac, ap] = a.split(/-(.*)/s), [bc, bp] = b.split(/-(.*)/s);
@@ -47,22 +49,28 @@ export function activate(store, req, b, issuer) {
   if (b.product !== 'operations' && !/^[A-Za-z0-9_:-]{8,120}$/.test(binding)) throw failure('设备标识无效');
   if (!VERSION.test(b.version || '')) throw failure('客户端版本无效');
   if (typeof b.nonce !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(b.nonce)) throw failure('需要有效的请求随机数');
+  const currentPolicy = policy(store, license);
+  const domain = b.domain ? hostname(b.domain) : '';
+  if (currentPolicy.domains.length && !currentPolicy.domains.includes(domain)) throw failure('此域名不在授权范围内', 403);
   let record = store.state.bindings.find(x => x.licenseId === license.id && x.product === b.product && x.binding === binding);
   if (record?.status === 'disabled') throw failure('此绑定已停用，请联系管理员', 403);
+  if (!record && migrating(store))throw failure('迁移期间暂不接受新设备激活，已有激活可继续验证',503);
   if (!record) {
     const count = store.state.bindings.filter(x => x.licenseId === license.id && x.product === b.product && x.status === 'active').length;
     if (count >= license.quotas[b.product]) throw failure('设备或站点授权名额已满', 409);
     record = { id: crypto.randomUUID(), licenseId: license.id, product: b.product, binding, kind: b.product === 'operations' ? 'domain' : 'device', status: 'active', activatedAt: now() };
     store.state.bindings.unshift(record); store.audit('产品激活', record.id);
   }
-  Object.assign(record, { version: b.version, lastSeenAt: now(), label: String(b.label || '').slice(0, 80) });
+  Object.assign(record, { version: b.version, lastSeenAt: now(), label: String(b.label || '').slice(0, 80), domain:domain || record.domain || '', policyRevision:currentPolicy.revision, authorizationMode:currentPolicy.mode, policyFetchedAt:now() });
   const iat = Math.floor(Date.now() / 1000), days = store.state.settings.offlineDays;
-  const payload = { schemaVersion: 2, issuer, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, checkAfter: Math.min(iat + store.state.settings.checkHours * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
-  return { activationId: record.id, lease: sign(store, payload), offlineDays: days };
+  const payload = { schemaVersion: 3, issuer, customerId:license.customerId, domain:domain || record.domain || '', authorizationMode:currentPolicy.mode, policyRevision:currentPolicy.revision, authorizedDomains:currentPolicy.domains, reconnectHours:currentPolicy.reconnectHours, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: currentPolicy.mode==='silent-local' ? Math.floor(Date.parse(license.expiresAt) / 1000) : Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, checkAfter: Math.min(iat + (currentPolicy.mode==='silent-local' ? currentPolicy.reconnectHours : store.state.settings.checkHours) * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
+  if(migrating(store)&&Number.isFinite(Date.parse(store.state.authority.graceUntil)))payload.exp=Math.max(payload.exp,Math.min(Math.floor(Date.parse(store.state.authority.graceUntil)/1000),Math.floor(Date.parse(license.expiresAt)/1000)));
+  return { terminalConfig:configuration(store,issuer), activationId: record.id, lease: sign(store, payload), offlineDays: days, policy:currentPolicy };
 }
 export function authorizedBinding(store, req, product) {
   const license = customerLicense(store, req);
   const binding = store.state.bindings.find(x => x.id === req.headers['x-hetun-activation'] && x.licenseId === license.id && x.status === 'active');
   if (!binding || !license.products.includes(binding.product) || (product && binding.product !== product)) throw failure('请先激活对应产品', 403);
+  const domains=policy(store,license).domains;if(domains.length&&!domains.includes(binding.product==='operations'?binding.binding:binding.domain))throw failure('绑定域名不在当前授权范围',403);
   return { license, binding };
 }

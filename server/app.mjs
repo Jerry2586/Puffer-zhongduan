@@ -1,6 +1,11 @@
+import { initializeAuthority, migrating, identity, configuration, startMigration, verifyDestination, finishMigration, acknowledge, progress, endpoint } from './authority.mjs';
+import { exportMigrationFile, receiveMigration, inspectMigrationFile } from './migration-stream.mjs';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { initializeCenter, policy, policyFields, history, recordEvent, setRepository, checkRepository, downloadAsset, RESOURCES } from './product-center.mjs';
 import http from 'node:http';
 import { selfUpdater } from './self-update.mjs';
-import { exportMigration, inspectMigration, importMigration, emptyTarget } from './migration.mjs';
+import { importMigration, emptyTarget } from './migration.mjs';
 import { isIP } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -84,9 +89,11 @@ export async function createTerminal(options) {
     res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(filename), 'X-Artifact-SHA256': hash, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(bytes);
   }
   function releaseAccess(req, r) {
-    const { license, binding } = authorizedBinding(store, req, r.kind === 'software' ? r.product : 'packer');
+    const { license, binding } = authorizedBinding(store, req, ['software','product-source'].includes(r.kind) || (r.kind==='installer' && PRODUCTS.includes(r.product)) ? r.product : undefined);
+    if(['theme','client-source'].includes(r.kind) && !(r.kind==='theme' ? ['packer','theme-center'] : ['packer']).includes(binding.product)) throw failure('此产品无权访问该资源',403);
+    if(r.kind==='installer'&&r.product==='client'&&binding.product!=='packer') throw failure('请激活打包器',403);
     if (r.status !== 'published') throw failure('版本尚未发布或已下架', 404);
-    if (r.kind === 'client-source' && !license.permissions.sourceDownload) throw failure('未授权源码下载', 403);
+    if (['client-source','product-source'].includes(r.kind) && !license.permissions.sourceDownload) throw failure('未授权源码下载', 403);
     return { license, binding };
   }
   function worker(req) {
@@ -110,6 +117,10 @@ export async function createTerminal(options) {
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
+    if(r==='/v1/terminal-identity'&&m==='GET')return json(res,200,identity(store,u.searchParams.get('nonce'),externalOrigin));
+    if(r==='/v1/terminal-config'&&m==='GET'){authorizedBinding(store,req);return json(res,200,configuration(store,externalOrigin));}
+    if(r==='/v1/terminal-config/ack'&&m==='POST'){const {binding}=authorizedBinding(store,req);const result=acknowledge(store,binding,await body(req),externalOrigin);await store.commit();return json(res,200,result);}
+    if(migrating(store)&&m==='POST'&&['/v1/jobs','/v1/worker/claim'].includes(r))throw failure('终端迁移中，暂不接受新构建任务',503);
     if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.2' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
@@ -131,35 +142,71 @@ export async function createTerminal(options) {
     }
     if (r.startsWith('/api/')) {
       readyAdmin(req, m !== 'GET');
+      if(migrating(store)&&m!=='GET'&&!r.startsWith('/api/migration/'))throw failure('终端迁移中，业务修改暂时冻结；可继续查看或取消迁移',409);
+      if(r==='/api/migration/status'&&m==='GET')return json(res,200,progress(store,externalOrigin));
+      if(r==='/api/migration/start'&&m==='POST'){const a=startMigration(store,await body(req));store.audit('开始服务器迁移',a.migrationId);await store.commit();return json(res,200,progress(store,externalOrigin));}
+      if(r==='/api/migration/cancel'&&m==='POST'){if(!migrating(store))throw failure('当前没有进行中的迁移',409);const a=store.state.authority;Object.assign(a,{phase:'cancelled',revision:a.revision+1,message:'迁移已取消',destination:null});store.audit('取消迁移',a.migrationId);await store.commit();return json(res,200,progress(store,externalOrigin));}
+      if(r==='/api/migration/address'&&m==='POST'){
+        const b=await body(req),primary=endpoint(b.primary),fallbacks=b.fallbacks||[];
+        if(!Array.isArray(fallbacks)||fallbacks.length>3)throw failure('备用地址最多三个');
+        const normalized=[...new Set(fallbacks.map(endpoint))].filter(x=>x!==primary);
+        const proof=await verifyDestination(store,primary,options.endpointProbe);
+        for(const fallback of normalized)await verifyDestination(store,fallback,options.endpointProbe);
+        const a=store.state.authority;Object.assign(a,{primary,fallbacks:normalized,revision:a.revision+1,destination:proof});store.audit('验证并下发授权地址',primary);await store.commit();return json(res,200,progress(store,externalOrigin));
+      }
+      if(r==='/api/migration/finish'&&m==='POST'){finishMigration(store,externalOrigin);store.audit('完成服务器迁移',store.state.authority.migrationId);await store.commit();return json(res,200,progress(store,externalOrigin));}
       if (r === '/api/self-update' && m === 'GET') return json(res,200,await updater.status());
       if (r === '/api/self-update/check' && m === 'POST') return json(res,200,await updater.check());
       if (r === '/api/self-update/install' && m === 'POST') { const b=await body(req); const job=await updater.queue(b.revision); store.audit('请求终端 Git 更新',job.revision); await store.commit(); return json(res,202,job); }
+      if (r === '/api/authorization-policy' && m === 'PATCH') {
+        const b=await body(req);if(!['online','silent-local'].includes(b.authorizationMode) || !Number.isInteger(b.reconnectHours) || b.reconnectHours<1 || b.reconnectHours>168)throw failure('授权模式或重连间隔无效');
+        Object.assign(store.state.settings,{authorizationMode:b.authorizationMode,reconnectHours:b.reconnectHours,policyRevision:(store.state.settings.policyRevision||1)+1});
+        store.audit('修改全局授权模式',b.authorizationMode);await store.commit();return json(res,200,store.state.settings);
+      }
+      if (r === '/api/product-records' && m === 'GET') {
+        const licenseId=u.searchParams.get('licenseId'),product=u.searchParams.get('product'),offset=Number(u.searchParams.get('offset')||0);
+        if(!Number.isSafeInteger(offset)||offset<0)throw failure('分页参数无效');
+        const records=store.state.productRecords.filter(x=>(!licenseId||x.licenseId===licenseId)&&(!product||x.product===product));return json(res,200,{total:records.length,offset,records:records.slice(offset,offset+100)});
+      }
+      const repoRoute=r.match(/^\/api\/repositories\/([a-z-]+)(?:\/(check|import))?$/);
+      if(repoRoute){const p=repoRoute[1];if(!RESOURCES.includes(p))throw failure('产品无效');
+        if(m==='PATCH'&&!repoRoute[2]){const config=setRepository(store,p,await body(req));await store.commit();return json(res,200,config);}
+        if(m==='POST'&&repoRoute[2]==='check'){await body(req);return json(res,200,await checkRepository(store,p,options.repositoryFetch));}
+        if(m==='POST'&&repoRoute[2]==='import'){
+          const b=await body(req),meta=b.metadata||{};
+          if((p==='templates'&&(meta.product!=='client'||meta.kind!=='theme'))||(p==='client'&&(meta.product!=='client'||meta.kind==='theme'))||(PRODUCTS.includes(p)&&(meta.product!==p||!['software','installer','product-source'].includes(meta.kind))))throw failure('Git 附件归属与产品不符');
+          const incoming=await downloadAsset(store,p,Number(b.assetId),options.repositoryFetch);
+          return json(res,201,await createRelease(store,{...meta,filename:incoming.asset.name,sourceOrigin:'GitHub Release',gitSource:{repository:incoming.repository,assetId:incoming.asset.id,tag:incoming.release.tag}},incoming.bytes));
+        }
+      }
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.2' });
+        return json(res, 200, { customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.2' });
       }
       if(r==='/api/integrations' && m==='GET') {
         let deployment=null;
         try{const status=JSON.parse(await fs.readFile(path.join(store.root,'deployment/status.json'),'utf8'));if(status.keyId===sha(store.publicKey).slice(0,16)&&externalOrigin==='https://'+status.domain&&status.verified===true)deployment={verified:true,domain:status.domain,checkedAt:status.checkedAt};}catch(e){if(e.code!=='ENOENT'&&!(e instanceof SyntaxError))throw e;}
         const probe=Buffer.from('hetun-terminal-self-check');
         const signature=crypto.sign(null,probe,store.privateKey);
-        return json(res,200,{deployment,origin:externalOrigin,keyId:sha(store.publicKey).slice(0,16),signatureValid:crypto.verify(null,probe,store.publicKey,signature),products:PRODUCTS.map(product=>({product,bindings:store.state.bindings.filter(b=>b.product===product).length,lastSeenAt:store.state.bindings.filter(b=>b.product===product).map(b=>b.lastSeenAt).filter(Boolean).sort().at(-1)||null,publishedVersions:store.state.releases.filter(v=>v.product===product&&v.kind==='software'&&v.status==='published').length})),endpoints:{publicKey:'/v1/license/public-key',activate:'/v1/license/activate',check:'/v1/license/check',updates:'/v1/updates'},emptyTarget:emptyTarget(store)});
+        return json(res,200,{deployment,origin:externalOrigin,keyId:sha(store.publicKey).slice(0,16),signatureValid:crypto.verify(null,probe,store.publicKey,signature),products:PRODUCTS.map(product=>({product,bindings:store.state.bindings.filter(b=>b.product===product).length,lastSeenAt:store.state.bindings.filter(b=>b.product===product).map(b=>b.lastSeenAt).filter(Boolean).sort().at(-1)||null,publishedVersions:store.state.releases.filter(v=>v.product===product&&v.kind==='software'&&v.status==='published').length})),endpoints:{records:'/v1/records',templates:'/v1/templates',productCatalog:'/v1/product-catalog',publicKey:'/v1/license/public-key',activate:'/v1/license/activate',check:'/v1/license/check',updates:'/v1/updates'},emptyTarget:emptyTarget(store)});
       }
       if(r==='/api/migration/export' && m==='POST') {
         const b=await body(req);
         if(typeof b.current!=='string'||!await checkPassword(b.current,store.admin))throw failure('当前管理员密码不正确',403);
-        const bytes=await exportMigration(store,b.passphrase,externalOrigin);
-        store.audit('导出加密迁移包',sha(store.publicKey).slice(0,16));await store.commit();
-        res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="puffer-migration.hetun"','Cache-Control':'no-store','Content-Length':bytes.length});return res.end(bytes);
+        const archive=await exportMigrationFile(store,b.passphrase,externalOrigin);
+        try{store.audit('导出加密迁移包',sha(store.publicKey).slice(0,16));await store.commit();res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="puffer-migration.hetun"','Cache-Control':'no-store','Content-Length':archive.bytes});await pipeline(createReadStream(archive.path),res);}finally{await archive.cleanup();}return;
       }
       if(r==='/api/migration/import' && m==='POST') {
         if(!emptyTarget(store))throw failure('请在空白的新服务器导入，当前已有业务数据',409);
         if(req.headers['content-type']!=='application/octet-stream')throw failure('需要迁移文件',415);
         const password=Buffer.from(String(req.headers['x-migration-passphrase']||''),'base64').toString('utf8');
-        const inspected=await inspectMigration(await body(req,true),password);
-        if(u.searchParams.get('confirm')!==sha(inspected.value.publicKey).slice(0,16))return json(res,200,{preview:inspected.summary});
-        const summary=await importMigration(store,inspected);sessions.clear();res.setHeader('Set-Cookie',cookie('',0));
-        return json(res,200,{imported:summary,relogin:true});
+        const uploaded=await receiveMigration(store.root,req);let inspected;
+        try{
+          inspected=await inspectMigrationFile(store.root,uploaded.path,password);
+          if(u.searchParams.get('confirm')!==sha(inspected.value.publicKey).slice(0,16))return json(res,200,{preview:inspected.summary});
+          const summary=await importMigration(store,inspected);initializeCenter(store.state);initializeAuthority(store.state);await store.commit();sessions.clear();res.setHeader('Set-Cookie',cookie('',0));
+          return json(res,200,{imported:summary,relogin:true});
+        }finally{await inspected?.cleanup();await uploaded.cleanup();}
       }
       if (r === '/api/customers' && m === 'POST') {
         const b = await body(req), name = String(b.name || '').trim(); if (!name || name.length > 80) throw failure('客户名称为 1–80 字');
@@ -170,8 +217,9 @@ export async function createTerminal(options) {
         if (!Array.isArray(b.products) || !b.products.length || new Set(b.products).size !== b.products.length || b.products.some(p => !PRODUCTS.includes(p))) throw failure('授权产品无效');
         const expiry = Date.parse(b.expiresAt); if (!Number.isFinite(expiry) || expiry <= Date.now()) throw failure('到期时间必须在未来');
         const quotas = {}; for (const p of PRODUCTS) { quotas[p] = Number(b.quotas?.[p] ?? (p === 'operations' ? 1 : 2)); if (!Number.isInteger(quotas[p]) || quotas[p] < 1 || quotas[p] > 100) throw failure('授权名额必须为 1–100'); }
+        const fields=policyFields(b);
         const key = 'HTN_' + crypto.randomBytes(32).toString('base64url');
-        const l = { id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label || '三产品授权').slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
+        const l = { ...fields, policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label || '三产品授权').slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
         store.state.licenses.unshift(l); store.audit('签发授权', l.id); await store.commit(); return json(res, 201, { license: publicLicense(l), key });
       }
       const lr = r.match(/^\/api\/licenses\/([a-f0-9-]{36})(\/rotate)?$/);
@@ -179,6 +227,8 @@ export async function createTerminal(options) {
         const l = find(store.state.licenses, lr[1], '授权');
         if (m === 'PATCH' && !lr[2]) {
           const b = await body(req);
+          const fields=policyFields(b); if(Object.keys(fields).length) {Object.assign(l,fields);l.policyRevision=(l.policyRevision||1)+1;store.audit('修改客户授权模式或域名',l.id);}
+          if (b.permissions !== undefined) {if(!b.permissions || ['sourceDownload','localBuild','cloudBuild'].some(k=>typeof b.permissions[k]!=='boolean'))throw failure('权限格式无效');l.permissions={sourceDownload:b.permissions.sourceDownload,localBuild:b.permissions.localBuild,cloudBuild:b.permissions.cloudBuild};l.policyRevision=(l.policyRevision||1)+1;}
           if (b.status !== undefined) { if (!['active', 'disabled'].includes(b.status)) throw failure('授权状态无效'); l.status = b.status; }
           if (b.expiresAt !== undefined) { const exp = Date.parse(b.expiresAt); if (!Number.isFinite(exp) || exp <= Date.now()) throw failure('续期时间必须在未来'); l.expiresAt = new Date(exp).toISOString(); }
           cancelUnauthorizedJobs(); store.audit('修改授权状态或续期', l.id); await store.commit(); return json(res, 200, publicLicense(l));
@@ -199,7 +249,7 @@ export async function createTerminal(options) {
         if (!rr[2] && m === 'PATCH') {
           const b = await body(req); if (!['published', 'withdrawn'].includes(b.status)) throw failure('发布状态无效');
           if (b.status === 'published') { await fs.access(path.join(root, 'files', release.file)); if (sha(await fs.readFile(path.join(root, 'files', release.file))) !== release.sha256) throw failure('文件损坏，不能发布', 409); release.publishedAt = now(); }
-          release.status = b.status; store.audit(b.status === 'published' ? '发布版本' : '下架版本', release.id); await store.commit(); return json(res, 200, publicRelease(release));
+          release.status = b.status; history(store,release.kind==='theme'?'templates':release.product,b.status==='published'?'发布版本':'下架版本',release.id,release.name+' '+release.version); store.audit(b.status === 'published' ? '发布版本' : '下架版本', release.id); await store.commit(); return json(res, 200, publicRelease(release));
         }
       }
       if (r === '/api/jobs' && m === 'POST') { const job = createJob(store, await body(req)); await store.commit(); return json(res, 201, job); }
@@ -212,14 +262,18 @@ export async function createTerminal(options) {
       }
       const nr = r.match(/^\/api\/nodes\/([a-f0-9-]{36})$/);
       if (nr && m === 'PATCH') { const node = find(store.state.nodes, nr[1], '节点'), b = await body(req); if (!['active', 'disabled'].includes(b.status)) throw failure('节点状态无效'); node.status = b.status; store.audit('修改节点状态', node.id); await store.commit(); return json(res, 200, { ok: true }); }
-      if (r === '/api/settings' && m === 'PATCH') { const b = await body(req); if (!Number.isInteger(b.offlineDays) || b.offlineDays < 1 || b.offlineDays > 30 || !Number.isInteger(b.checkHours) || b.checkHours < 1 || b.checkHours > b.offlineDays * 24) throw failure('离线期限为 1–30 天，检查间隔不能超过该期限'); store.state.settings = { offlineDays: b.offlineDays, checkHours: b.checkHours }; store.audit('修改授权策略', 'settings'); await store.commit(); return json(res, 200, store.state.settings); }
+      if (r === '/api/settings' && m === 'PATCH') { const b = await body(req); if (!Number.isInteger(b.offlineDays) || b.offlineDays < 1 || b.offlineDays > 30 || !Number.isInteger(b.checkHours) || b.checkHours < 1 || b.checkHours > b.offlineDays * 24) throw failure('离线期限为 1–30 天，检查间隔不能超过该期限'); store.state.settings = { ...store.state.settings, offlineDays: b.offlineDays, checkHours: b.checkHours,policyRevision:(store.state.settings.policyRevision||1)+1 }; store.audit('修改授权策略', 'settings'); await store.commit(); return json(res, 200, store.state.settings); }
       throw failure('管理接口不存在', 404);
     }
     if (r === '/v1/license/public-key' && m === 'GET') return json(res, 200, { issuer: externalOrigin, algorithm: 'Ed25519', keyId: sha(store.publicKey).slice(0, 16), publicKey: store.publicKey });
     if (['/v1/license/activate', '/v1/license/check'].includes(r) && m === 'POST') { const result = activate(store, req, await body(req), externalOrigin); await store.commit(); return json(res, 200, result); }
+    if (r === '/v1/records' && m === 'POST') {const {license,binding}=authorizedBinding(store,req);const result=recordEvent(store,license,binding,await body(req));await store.commit();return json(res,result.duplicate?200:201,result);}
+    if (r === '/v1/records' && m === 'GET') {const {license}=authorizedBinding(store,req);return json(res,200,{records:store.state.productRecords.filter(x=>x.licenseId===license.id).slice(0,100)});}
+    if (r === '/v1/templates' && m === 'GET') {const {binding}=authorizedBinding(store,req);if(!['theme-center','packer'].includes(binding.product))throw failure('请激活主题中心或打包器',403);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.kind==='theme').map(publicRelease)}));}
+    if (r === '/v1/product-catalog' && m === 'GET') {const {license,binding}=authorizedBinding(store,req);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,product:binding.product,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.product===binding.product&&(x.kind!=='product-source'||license.permissions.sourceDownload)).map(publicRelease)}));}
     if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'); authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', externalOrigin)); }
-    if (r === '/v1/installations/report' && m === 'POST') { const { binding } = authorizedBinding(store, req), b = await body(req); if (!VERSION.test(b.version || '') || !['current', 'updating', 'failed'].includes(b.updateStatus)) throw failure('安装状态无效'); Object.assign(binding, { version: b.version, updateStatus: b.updateStatus, updateError: String(b.error || '').slice(0, 300), lastSeenAt: now() }); await store.commit(); return json(res, 200, { ok: true }); }
-    if (r === '/v1/catalog' && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); return json(res, 200, { releases: store.state.releases.filter(x => x.status === 'published' && x.kind !== 'software' && (x.kind !== 'client-source' || license.permissions.sourceDownload)).map(publicRelease), permissions: license.permissions }); }
+    if (r === '/v1/installations/report' && m === 'POST') { const { license, binding } = authorizedBinding(store, req), b = await body(req); if (!VERSION.test(b.version || '') || !['current', 'updating', 'failed'].includes(b.updateStatus)) throw failure('安装状态无效'); if(b.eventId) recordEvent(store,license,binding,{eventId:b.eventId,type:b.updateStatus==='failed'?'update-failed':b.updateStatus==='current'?'update-success':'update-check',version:b.version,occurredAt:b.occurredAt,details:{message:String(b.error||'').slice(0,300)}}); Object.assign(binding, { version: b.version, updateStatus: b.updateStatus, updateError: String(b.error || '').slice(0, 300), lastSeenAt: now() }); await store.commit(); return json(res, 200, { ok: true }); }
+    if (r === '/v1/catalog' && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); return json(res, 200, { releases: store.state.releases.filter(x => x.status === 'published' && x.product==='client' && x.kind !== 'software' && (x.kind !== 'client-source' || license.permissions.sourceDownload)).map(publicRelease), permissions: license.permissions }); }
     const cr = r.match(/^\/v1\/releases\/([a-f0-9-]{36})\/download$/);
     if (cr && m === 'GET') { const release = find(store.state.releases, cr[1], '版本'); releaseAccess(req, release); return download(res, release.file, release.filename, release.sha256); }
     if (r === '/v1/jobs') { const { license } = authorizedBinding(store, req, 'packer'); if (!license.permissions.cloudBuild) throw failure('未授权在线构建', 403); if (m === 'GET') return json(res, 200, { jobs: store.state.jobs.filter(j => j.owner === license.id).map(j => { const { artifact, ...rest } = j; return rest; }) }); if (m === 'POST') { const job = createJob(store, await body(req), license.id); await store.commit(); return json(res, 201, job); } }

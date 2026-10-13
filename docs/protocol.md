@@ -71,3 +71,6 @@ Flutter 源码 ZIP 根目录必须有 pubspec.yaml 和 lib/main.dart；uni-app �
 ## 状态码
 
 400 参数/包格式无效；401 未登录或凭据缺失；403 权限/授权拒绝；404 资源不存在；409 名额/版本/状态/哈希冲突；413 文件过大；415 内容类型不符。管理员 API 使用会话 Cookie，并要求 Origin 和 X-CSRF-Token；不要复用管理员会话为客户 SDK 鉴权。
+
+## 迁移通知与授权地址下发
+GET /v1/terminal-identity、GET /v1/terminal-config、POST /v1/terminal-config/ack 及客户端安全切换约定见 migration.md。activate/check 响应附加 terminalConfig 签名封套；客户端必须实现验签、持久化与受信 issuer 迁移才具备自动换地址能力。

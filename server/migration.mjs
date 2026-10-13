@@ -1,3 +1,4 @@
+import { validateAuthority } from './authority.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -51,21 +52,34 @@ export async function inspectMigration(bytes,password) {
     const compressed=Buffer.concat([cipher.update(bytes.subarray(52)),cipher.final()]);
     value=JSON.parse((await unzip(compressed,{maxOutputLength:128*1024*1024})).toString());
   }catch {throw error('迁移密码错误或迁移包已损坏');}
+  return validateSnapshot(value);
+}
+export function validateSnapshot(value, suppliedFiles) {
   const s=value.state;
   if(value.format!=='hetun-migration'||value.version!==1||s?.schemaVersion!==1||!s.settings||!Number.isInteger(s.settings.offlineDays)||s.settings.offlineDays<1||s.settings.offlineDays>30||!Number.isInteger(s.settings.checkHours)||s.settings.checkHours<1||s.settings.checkHours>s.settings.offlineDays*24)throw error('迁移数据版本或策略无效');
   for(const list of lists)if(!Array.isArray(s[list])||s[list].some(x=>!x||typeof x.id!=='string')||new Set(s[list].map(x=>x.id)).size!==s[list].length)throw error('迁移业务列表无效：'+list);
+  validateAuthority(s.authority);
   const products=['packer','theme-center','operations'];
   const string=v=>typeof v==='string',date=v=>string(v)&&Number.isFinite(Date.parse(v));
   if(!date(value.createdAt)||!string(value.origin))throw error('迁移来源信息无效');
   if(s.customers.some(c=>!string(c.name)||!string(c.contact)||!date(c.createdAt))||s.audit.some(a=>!string(a.action)||!string(a.target)||!date(a.at)))throw error('迁移客户或审计记录无效');
-  if(s.releases.some(r=>!['software','client-source','theme','installer'].includes(r.kind)||!string(r.product)||!string(r.version)||!string(r.platform)||!string(r.name)||!string(r.filename)||!['draft','published','withdrawn'].includes(r.status))||s.jobs.some(j=>!['queued','running','complete','failed','cancelled'].includes(j.status))||s.nodes.some(n=>!string(n.name)||!Array.isArray(n.targets)||!/^[a-f0-9]{64}$/.test(n.tokenHash)))throw error('迁移版本、任务或节点记录无效');
+  if(s.releases.some(r=>!['software','product-source','client-source','theme','installer'].includes(r.kind)||!string(r.product)||!string(r.version)||!string(r.platform)||!string(r.name)||!string(r.filename)||!['draft','published','withdrawn'].includes(r.status))||s.jobs.some(j=>!['queued','running','complete','failed','cancelled'].includes(j.status))||s.nodes.some(n=>!string(n.name)||!Array.isArray(n.targets)||!/^[a-f0-9]{64}$/.test(n.tokenHash)))throw error('迁移版本、任务或节点记录无效');
   const customerIds=new Set(s.customers.map(x=>x.id)),licenseIds=new Set(s.licenses.map(x=>x.id));
   if(s.licenses.some(l=>!customerIds.has(l.customerId)||!Array.isArray(l.products)||l.products.some(p=>!['packer','theme-center','operations'].includes(p))||!/^[a-f0-9]{64}$/.test(l.keyHash)||!Number.isFinite(Date.parse(l.expiresAt))||!l.quotas||products.some(p=>!Number.isInteger(l.quotas[p])||l.quotas[p]<1||l.quotas[p]>100)||!l.permissions||['sourceDownload','localBuild','cloudBuild'].some(p=>typeof l.permissions[p]!=='boolean')||!['active','disabled'].includes(l.status))||s.bindings.some(b=>!licenseIds.has(b.licenseId)||!['packer','theme-center','operations'].includes(b.product)))throw error('迁移授权关系无效');
+
+  if (s.settings.authorizationMode!==undefined&&!['online','silent-local'].includes(s.settings.authorizationMode) || s.settings.policyRevision!==undefined&&(!Number.isSafeInteger(s.settings.policyRevision)||s.settings.policyRevision<1) || s.settings.reconnectHours!==undefined&&(!Number.isInteger(s.settings.reconnectHours)||s.settings.reconnectHours<1||s.settings.reconnectHours>168)) throw error('迁移授权策略无效');
+  for (const l of s.licenses) if (l.authorizationMode!==undefined&&![null,'online','silent-local'].includes(l.authorizationMode) || l.domains!==undefined&&(!Array.isArray(l.domains)||l.domains.length>20||l.domains.some(d=>!string(d)||!/^[a-z0-9.-]+$/.test(d))) || l.policyRevision!==undefined&&(!Number.isSafeInteger(l.policyRevision)||l.policyRevision<1)) throw error('迁移客户授权策略无效');
+  for (const list of ['productRecords','releaseHistory']) if(s[list]!==undefined&&(!Array.isArray(s[list])||s[list].some(x=>!x||!string(x.id))||new Set(s[list].map(x=>x.id)).size!==s[list].length))throw error('迁移扩展记录无效：'+list);
+  const bindingIds=new Set(s.bindings.map(x=>x.id));
+  if(s.productRecords?.some(x=>!licenseIds.has(x.licenseId)||!bindingIds.has(x.activationId)||!products.includes(x.product)||!date(x.occurredAt)||!date(x.receivedAt)||!string(x.eventId)||!x.details||typeof x.details!=='object'||Array.isArray(x.details)))throw error('迁移产品记录关系无效');
+  if(s.releaseHistory?.some(x=>!string(x.product)||!string(x.action)||!string(x.target)||!date(x.at)))throw error('迁移版本历史无效');
+  if(s.repositories!==undefined&&(!s.repositories||typeof s.repositories!=='object'||Array.isArray(s.repositories)||Object.entries(s.repositories).some(([p,c])=>!['packer','theme-center','operations','client','templates'].includes(p)||!c||c.product!==p||!string(c.repository)||(c.repository&&!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(c.repository))||!string(c.branch)||!/^[A-Za-z0-9_.\/-]{1,100}$/.test(c.branch)||c.branch.includes('..'))))throw error('迁移 Git 绑定无效');
   if(value.admin?.username!=='admin'||!/^[a-f0-9]{32}$/.test(value.admin.salt)||!/^[a-f0-9]{64}$/.test(value.admin.hash)||value.admin.mustChange!==false)throw error('迁移管理员记录无效');
   try {
     const privateKey=crypto.createPrivateKey(value.privateKey),publicKey=crypto.createPublicKey(value.publicKey);
     if(privateKey.asymmetricKeyType!=='ed25519'||publicKey.asymmetricKeyType!=='ed25519'||crypto.createPublicKey(privateKey).export({type:'spki',format:'pem'})!==value.publicKey)throw Error();
   }catch{throw error('迁移签名密钥不匹配');}
+  if(suppliedFiles) return {value, files:suppliedFiles, summary:{createdAt:value.createdAt,sourceOrigin:value.origin,keyId:hash(value.publicKey).slice(0,16),customers:s.customers.length,licenses:s.licenses.length,bindings:s.bindings.length,releases:s.releases.length,files:suppliedFiles.size,bytes:[...suppliedFiles.values()].reduce((n,f)=>n+f.bytes,0)}};
   if(!value.files||typeof value.files!=='object'||Array.isArray(value.files))throw error('迁移文件清单无效');
   const required=new Map();for(const r of [...s.releases,...s.jobs.map(j=>j.artifact).filter(Boolean)])required.set(r.file,r);
   const files=new Map();let total=0;
@@ -88,7 +102,8 @@ export async function importMigration(store,inspected) {
   const {value,files}=inspected,state=structuredClone(value.state);
   for(const j of state.jobs)if(['queued','running'].includes(j.status))Object.assign(j,{status:'cancelled',error:'服务器迁移取消了未完成任务，请重新提交',finishedAt:new Date().toISOString()});
   await fs.mkdir(path.join(stage,'keys'),{recursive:true,mode:0o700});await fs.mkdir(path.join(stage,'files'),{mode:0o700});await fs.mkdir(old,{mode:0o700});
-  for(const [name,b] of files)await fs.writeFile(path.join(stage,'files',name),b,{mode:0o600});
+  for(const [name,b] of files){if(Buffer.isBuffer(b))await fs.writeFile(path.join(stage,'files',name),b,{mode:0o600});else {await fs.copyFile(b.path,path.join(stage,'files',name));await fs.chmod(path.join(stage,'files',name),0o600);}}
+  if(state.authority&&['preparing','restored'].includes(state.authority.phase))Object.assign(state.authority,{phase:'restored',destination:null});
   for(const [name,b] of [['data.json',JSON.stringify(state)],['admin.json',JSON.stringify(value.admin)],['keys/private.pem',value.privateKey],['keys/public.pem',value.publicKey]])await fs.writeFile(path.join(stage,name),b,{mode:0o600});
   state.audit.unshift({id:crypto.randomUUID(),action:'导入服务器迁移包',target:inspected.summary.keyId,at:new Date().toISOString()});
   state.audit.length=Math.min(state.audit.length,2000);

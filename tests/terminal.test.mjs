@@ -87,7 +87,7 @@ test('加密迁移：先预检，确认后保留授权签名和真实文件，�
   const c=await x.customer('迁移客户'),l=await x.issue(c.id);const activated=await x.activate(l.key);assert.equal(activated.status,200);
   const uploaded=await x.upload('theme','1.0.0',themeZip);assert.equal(uploaded.status,201);await x.publish(uploaded.value.id);
   assert.equal((await x.call('/api/migration/export','POST',{current:'wrong',passphrase:'迁移密码'})).status,403);
-  const bundle=await x.call('/api/migration/export','POST',{current:'test-secure-password-2026',passphrase:'迁移密码'});assert.equal(bundle.status,200);assert.equal(bundle.bytes.subarray(0,8).toString(),'HETUNM01');assert.equal(bundle.bytes.includes(Buffer.from('PRIVATE KEY')),false);
+  const bundle=await x.call('/api/migration/export','POST',{current:'test-secure-password-2026',passphrase:'迁移密码'});assert.equal(bundle.status,200);assert.equal(bundle.bytes.subarray(0,8).toString(),'HETUNM02');assert.equal(bundle.bytes.includes(Buffer.from('PRIVATE KEY')),false);
   const headers={'Content-Type':'application/octet-stream','X-Migration-Passphrase':Buffer.from('迁移密码').toString('base64')};
   const oldKey=y.app.store.publicKey;
   assert.equal((await y.call('/api/migration/import','POST',bundle.bytes,{...headers,'X-Migration-Passphrase':Buffer.from('wrong').toString('base64')})).status,400);
