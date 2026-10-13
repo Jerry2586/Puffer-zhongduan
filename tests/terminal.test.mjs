@@ -103,3 +103,20 @@ test('加密迁移：先预检，确认后保留授权签名和真实文件，�
 test('终端自身更新需要管理员与 CSRF，开发环境只能检查',async t=>{const x=await setup(t,{updateFetch:async()=>({ok:true,json:async()=>({sha:'b'.repeat(40),commit:{message:'测试更新'}})})});assert.equal((await x.call('/api/self-update','GET',undefined,{},false)).status,401);assert.equal((await x.call('/api/self-update/check','POST',{}, {'X-CSRF-Token':'invalid'})).status,403);const checked=await x.call('/api/self-update/check','POST',{});assert.equal(checked.status,200);assert.equal(checked.value.latest.sha,'b'.repeat(40));assert.equal((await x.call('/api/self-update/install','POST',{revision:'b'.repeat(40)})).status,409);});
 
 test('Linux 在线更新接口产生真实请求文件并拒绝重复提交',async t=>{await fs.mkdir(folder,{recursive:true});const directory=await fs.mkdtemp(path.join(folder,'puffer-agent-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));await fs.writeFile(path.join(directory,'agent.json'),JSON.stringify({at:new Date().toISOString()}));const x=await setup(t,{maintenanceDirectory:directory,revision:'a'.repeat(40),updateFetch:async()=>({ok:true,json:async()=>({sha:'b'.repeat(40),commit:{message:'测试更新'}})})});const checked=await x.call('/api/self-update/check','POST',{});assert.equal(checked.value.enabled,true);const queued=await x.call('/api/self-update/install','POST',{revision:'b'.repeat(40)});assert.equal(queued.status,202);assert.equal(queued.value.state,'queued');assert.match(await fs.readFile(path.join(directory,'request'),'utf8'),/ b{40}\n$/);assert.equal((await x.call('/api/self-update','GET')).value.task.id,queued.value.id);assert.equal((await x.call('/api/self-update/install','POST',{revision:'b'.repeat(40)})).status,409);});
+
+test('页面按内容版本加载资源，CDN缓存旧地址不会影响新版界面',async t=>{
+ const s=await setup(t);const page=await s.call('/');
+ assert.equal(page.headers.get('cache-control'),'no-store');
+ const html=page.bytes.toString('utf8');
+ for(const name of ['app.js','style.css','logo.svg']) {
+  const content=await fs.readFile(fileURLToPath(new URL('../public/'+name,import.meta.url)));
+  const hash=crypto.createHash('sha256').update(content).digest('hex');
+  const url='/assets/'+hash+'/'+name;
+  assert.ok(html.includes(url));
+  const resource=await s.call(url);assert.equal(resource.status,200);assert.deepEqual(resource.bytes,content);
+  assert.equal(resource.headers.get('cache-control'),'public, max-age=31536000, immutable');
+  assert.equal((await s.call('/assets/'+'0'.repeat(64)+'/'+name)).status,404);
+  assert.equal((await s.call('/'+name)).headers.get('cache-control'),'no-store');
+ }
+ assert.equal((await s.call('/assets/'+'0'.repeat(64)+'/../server/app.mjs')).status,404);
+});

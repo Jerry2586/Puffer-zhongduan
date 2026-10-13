@@ -353,9 +353,20 @@ export async function createTerminal(options) {
       }
       throw failure('节点接口不存在', 404);
     }
-    if (m === 'GET' && ['/', '/app.js', '/style.css', '/logo.svg'].includes(r)) {
-      const name = r === '/' ? 'index.html' : r.slice(1), bytes = await fs.readFile(path.join(sourceRoot, 'public', name));
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(name)], 'Cache-Control': 'no-cache', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' }); return res.end(bytes);
+    const versionedAsset = r.match(/^\/assets\/([a-f0-9]{64})\/(app\.js|style\.css|logo\.svg)$/);
+    if (m === 'GET' && (versionedAsset || ['/', '/app.js', '/style.css', '/logo.svg'].includes(r))) {
+      const name = versionedAsset ? versionedAsset[2] : r === '/' ? 'index.html' : r.slice(1);
+      let bytes = await fs.readFile(path.join(sourceRoot, 'public', name));
+      if (versionedAsset && versionedAsset[1] !== sha(bytes)) throw failure('页面资源版本已更新，请重新打开页面', 404);
+      if (name === 'index.html') {
+        let html = bytes.toString('utf8');
+        for (const asset of ['app.js', 'style.css', 'logo.svg']) {
+          const content = await fs.readFile(path.join(sourceRoot, 'public', asset));
+          html = html.replaceAll('/' + asset, '/assets/' + sha(content) + '/' + asset);
+        }
+        bytes = Buffer.from(html);
+      }
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(name)], 'Cache-Control': versionedAsset ? 'public, max-age=31536000, immutable' : 'no-store', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' }); return res.end(bytes);
     }
     throw failure('接口不存在', 404);
   }
