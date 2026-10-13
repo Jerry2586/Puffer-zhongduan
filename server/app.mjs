@@ -226,14 +226,17 @@ export async function createTerminal(options) {
         const c = { id: crypto.randomUUID(), name, contact: String(b.contact || '').slice(0, 120), createdAt: now() }; store.state.customers.unshift(c); store.audit('创建客户', c.id); await store.commit(); return json(res, 201, c);
       }
       if (r === '/api/licenses' && m === 'POST') {
-        const b = await body(req); find(store.state.customers, b.customerId, '客户');
+        const b = await body(req);
+        let createdCustomer = null;
+        if (b.customerId) { find(store.state.customers, b.customerId, '客户'); if (b.customer !== undefined) throw failure('请选择已有客户或新建客户，不可同时提交'); }
+        else { const name = typeof b.customer?.name === 'string' ? b.customer.name.trim() : ''; const contact = b.customer?.contact ?? ''; if (!name || name.length > 80 || typeof contact !== 'string' || contact.length > 120) throw failure('客户名称为 1–80 字，联系方式最多120字'); createdCustomer = {id:crypto.randomUUID(),name,contact,createdAt:now()}; b.customerId = createdCustomer.id; }
         if (!Array.isArray(b.products) || !b.products.length || new Set(b.products).size !== b.products.length || b.products.some(p => !PRODUCTS.includes(p))) throw failure('授权产品无效');
         const expiry = Date.parse(b.expiresAt); if (!Number.isFinite(expiry) || expiry <= Date.now()) throw failure('到期时间必须在未来');
         const quotas = {}; for (const p of PRODUCTS) { quotas[p] = Number(b.quotas?.[p] ?? (p === 'operations' ? 1 : 2)); if (!Number.isInteger(quotas[p]) || quotas[p] < 1 || quotas[p] > 100) throw failure('授权名额必须为 1–100'); }
         const fields=policyFields(b);
         const key = 'HTN_' + crypto.randomBytes(32).toString('base64url');
         const l = { ...fields, policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label?.trim() || (b.products.length===3?'三产品统一授权':b.products.map(p=>({'theme-center':'主题中心',packer:'打包器',operations:'影视中心'}[p])).join('、')+'授权')).slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
-        store.state.licenses.unshift(l); store.audit('签发授权', l.id); await store.commit(); return json(res, 201, { license: publicLicense(l), key });
+        if(createdCustomer){store.state.customers.unshift(createdCustomer);store.audit('创建客户',createdCustomer.id);} store.state.licenses.unshift(l); store.audit('签发授权', l.id); await store.commit(); return json(res, 201, { license: publicLicense(l), key });
       }
       const lr = r.match(/^\/api\/licenses\/([a-f0-9-]{36})(\/rotate)?$/);
       if (lr) {
@@ -249,13 +252,14 @@ export async function createTerminal(options) {
           const b = await body(req);
           // Validate the complete edit before changing any stored authorization fields.
           const fields=policyFields(b), changes={...fields};
+          let customerChanges=null; if(b.customer!==undefined){const name=typeof b.customer?.name==='string'?b.customer.name.trim():'';const contact=b.customer?.contact??'';if(!name||name.length>80||typeof contact!=='string'||contact.length>120)throw failure('客户名称为 1–80 字，联系方式最多120字');customerChanges={name,contact};}
           if(b.products!==undefined){if(!Array.isArray(b.products)||!b.products.length||new Set(b.products).size!==b.products.length||b.products.some(p=>!PRODUCTS.includes(p)))throw failure('至少选择一个有效授权产品');changes.products=[...b.products];}
           if(b.label!==undefined){if(typeof b.label!=='string'||!b.label.trim()||b.label.trim().length>80)throw failure('授权名称必须为 1–80 字');changes.label=b.label.trim();}
           if(b.quotas!==undefined){const quotas={};for(const p of PRODUCTS){quotas[p]=Number(b.quotas?.[p]);if(!Number.isInteger(quotas[p])||quotas[p]<1||quotas[p]>100)throw failure('授权名额必须为 1–100');if((changes.products||l.products).includes(p)&&store.state.bindings.filter(x=>x.licenseId===l.id&&x.product===p&&x.status==='active').length>quotas[p])throw failure('名额不能低于该产品当前有效绑定数量',409);}changes.quotas=quotas;}
           if(b.permissions!==undefined){if(!b.permissions||['sourceDownload','localBuild','cloudBuild'].some(k=>typeof b.permissions[k]!=='boolean'))throw failure('权限格式无效');changes.permissions={sourceDownload:b.permissions.sourceDownload,localBuild:b.permissions.localBuild,cloudBuild:b.permissions.cloudBuild};}
           if(b.status!==undefined){if(!['active','disabled'].includes(b.status))throw failure('授权状态无效');changes.status=b.status;}
           if(b.expiresAt!==undefined){const exp=Date.parse(b.expiresAt);if(!Number.isFinite(exp)||exp<=Date.now())throw failure('续期时间必须在未来');changes.expiresAt=new Date(exp).toISOString();}
-          Object.assign(l,changes);if(Object.keys(changes).length)l.policyRevision=(l.policyRevision||1)+1;
+          if(customerChanges){Object.assign(find(store.state.customers,l.customerId,'客户'),customerChanges);store.audit('修改客户',l.customerId);} Object.assign(l,changes);if(Object.keys(changes).length)l.policyRevision=(l.policyRevision||1)+1;
           cancelUnauthorizedJobs();store.audit('修改统一授权',l.id);await store.commit();return json(res,200,publicLicense(l));
         }
         if (m === 'POST' && lr[2]) { const key = 'HTN_' + crypto.randomBytes(32).toString('base64url'); store.state.revocations.unshift({...l,status:'revoked',revokedAt:now(),reason:'key-rotated'}); l.keyHash = sha(key); l.policyRevision=(l.policyRevision||1)+1; store.audit('轮换授权 Key', l.id); await store.commit(); return json(res, 200, { key }); }
