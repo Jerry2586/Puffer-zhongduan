@@ -9,7 +9,7 @@ BACKUP_DIR=/var/backups/puffer-terminal
 REPO=Jerry2586/Puffer-zhongduan
 ENV_FILE=$CONFIG_DIR/terminal.env
 COMPOSE_FILE=$CONFIG_DIR/compose.yaml
-MENU_VERSION=0.2.2
+MENU_VERSION=0.2.3
 say() { printf '\n%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 require_root() { [[ $(id -u) == 0 ]] || die '请使用 sudo 或 root 执行。'; }
