@@ -1,3 +1,4 @@
+import {authorizationLog} from './authorization-log.mjs';
 import { initializeCommunications } from './communications.mjs';
 import { initializeAuthority } from './authority.mjs';
 import { initializeCenter } from './product-center.mjs';
@@ -38,6 +39,7 @@ export async function openStore(root) {
     state = { schemaVersion: 1, customers: [], licenses: [], bindings: [], releases: [], jobs: [], nodes: [], audit: [], settings: { offlineDays: 7, checkHours: 24 } };
   }
   if (state.schemaVersion !== 1) throw new Error('数据版本不兼容，禁止覆盖');
+  state.authorizationLogs ??= []; state.revocations ??= []; state.settings.authorizationLogDays ??= 365;
   initializeCenter(state);
   initializeCommunications(state);
   initializeAuthority(state);
@@ -72,6 +74,8 @@ export async function openStore(root) {
     commit: () => atomic(file, store.state),
     audit(action, target) {
       store.state.audit.unshift({ id: crypto.randomUUID(), action, target, at: now() });
+      const l=store.state.licenses.find(x=>x.id===target)||store.state.revocations.find(x=>x.id===target),b=store.state.bindings.find(x=>x.id===target);
+      if(l||b)authorizationLog(store,{licenseId:l?.id||b.licenseId,activationId:b?.id,product:b?.product,deviceId:b?.binding,type:'admin-action',result:'applied',action});
       store.state.audit.length = Math.min(store.state.audit.length, 2000);
     },
     serial(fn) {

@@ -83,3 +83,54 @@ test('加密迁移保留新策略、域名、Git绑定及产品云端记录',asy
  const imported=await y.call('/api/migration/import?confirm='+preview.value.preview.keyId,'POST',exported.bytes,headers);assert.equal(imported.status,200);
  assert.equal(y.app.store.state.productRecords.length,1);assert.equal(y.app.store.state.licenses[0].authorizationMode,'silent-local');assert.deepEqual(y.app.store.state.licenses[0].domains,['ops.example.com']);assert.equal(y.app.store.state.repositories.packer.repository,'Jerry2586/Puffer-dabaoqi');assert.equal(y.app.store.publicKey,x.app.store.publicKey);
 });
+
+
+test('统一 Key 跨三个产品激活，编辑产品权限保持 Key 和绑定身份',async t=>{
+ const x=await setup(t),c=await x.customer('统一客户'),l=await x.issue(c.id),id=l.license.id;
+ const theme=await x.activate(l.key,'theme-center'),packer=await x.activate(l.key,'packer'),ops=await x.activate(l.key,'operations');
+ assert.equal(theme.status,200);assert.equal(packer.status,200);assert.equal(ops.status,200);
+ const revision=l.license.policyRevision;
+ const edited=await x.call('/api/licenses/'+id,'PATCH',{label:'客户统一授权',products:['packer','operations'],quotas:{'theme-center':2,packer:2,operations:1}});
+ assert.equal(edited.status,200);assert.ok(edited.value.policyRevision>revision);assert.equal(edited.value.label,'客户统一授权');
+ assert.equal((await x.activate(l.key,'theme-center')).status,403);
+ assert.equal((await x.call('/v1/templates','GET',undefined,{Authorization:'Bearer '+l.key,'X-Hetun-Activation':theme.value.activationId},false)).status,403);
+ assert.equal((await x.activate(l.key,'packer')).value.activationId,packer.value.activationId);
+ assert.equal((await x.activate(l.key,'operations')).value.activationId,ops.value.activationId);
+ assert.equal((await x.call('/api/licenses/'+id,'PATCH',{products:['theme-center','packer','operations']})).status,200);
+ assert.equal((await x.activate(l.key,'theme-center')).value.activationId,theme.value.activationId);
+ const overview=(await x.call('/api/overview')).value;assert.equal(overview.licenses.length,1);assert.equal(overview.bindings.length,3);
+});
+test('统一授权无效组合不产生部分修改，名额不低于现有有效绑定',async t=>{
+ const x=await setup(t),c=await x.customer(),l=await x.issue(c.id),id=l.license.id;
+ const before=(await x.call('/api/overview')).value.licenses[0];
+ assert.equal((await x.call('/api/licenses/'+id,'PATCH',{authorizationMode:'silent-local',label:'不得保存',products:[]})).status,400);
+ assert.deepEqual((await x.call('/api/overview')).value.licenses[0],before);
+ assert.equal((await x.call('/api/licenses/'+id,'PATCH',{products:['packer','packer']})).status,400);
+ assert.equal((await x.call('/api/licenses/'+id,'PATCH',{products:['client']})).status,400);
+ assert.equal((await x.activate(l.key,'packer','device-one-001')).status,200);assert.equal((await x.activate(l.key,'packer','device-two-002')).status,200);
+ assert.equal((await x.call('/api/licenses/'+id,'PATCH',{label:'不得部分保存',quotas:{'theme-center':2,packer:1,operations:1}})).status,409);
+ assert.equal((await x.call('/api/overview')).value.licenses[0].label,before.label);
+ const single=await x.issue(c.id,{products:['packer']});assert.equal(single.license.label,'打包器授权');
+});
+
+test('删除统一授权使三个产品联网失效并保留客户历史，其他 Key 不受影响',async t=>{
+ const x=await setup(t),c=await x.customer(),l=await x.issue(c.id),other=await x.issue(c.id);
+ const acts=[];for(const p of ['theme-center','packer','operations']){const a=await x.activate(l.key,p);assert.equal(a.status,200);acts.push(a.value.activationId);}
+ x.app.store.state.productRecords.push({id:'history-delete-test',licenseId:l.license.id,product:'packer'});
+ x.app.store.state.jobs.push({id:'job-delete-test',owner:l.license.id,status:'queued'});await x.app.store.commit();
+ assert.equal((await x.call('/api/licenses/'+l.license.id,'DELETE')).status,200);
+ const view=(await x.call('/api/overview')).value;assert.equal(view.licenses.length,1);assert.equal(view.licenses[0].id,other.license.id);assert.equal(view.bindings.length,3);assert.ok(view.bindings.every(b=>b.status==='disabled'));assert.equal(view.customers.length,1);
+ for(const p of ['theme-center','packer','operations'])assert.equal((await x.activate(l.key,p)).status,403);
+ assert.equal((await x.call('/v1/templates','GET',undefined,{Authorization:'Bearer '+l.key,'X-Hetun-Activation':acts[0]},false)).status,403);
+ assert.equal(x.app.store.state.jobs.find(j=>j.id==='job-delete-test').status,'cancelled');assert.equal(x.app.store.state.productRecords.length,1);
+ assert.equal((await x.activate(other.key)).status,200);assert.equal((await x.call('/api/licenses/'+l.license.id,'DELETE')).status,404);
+});
+
+import authClient from '../integrations/authorization-client.cjs';
+import {requestIP,createGeoLookup} from '../server/authorization-log.mjs';
+async function desktop(t,x,l,product='packer',props={}){const root=await fs.mkdtemp(path.join(os.tmpdir(),'hetun-desktop-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const secret=crypto.randomBytes(32);const encrypt=s=>{const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',secret,iv);return Buffer.concat([iv,c.getAuthTag?.name?Buffer.alloc(0):Buffer.alloc(0),c.update(s),c.final(),c.getAuthTag()]);};const decrypt=b=>{const c=crypto.createDecipheriv('aes-256-gcm',secret,b.subarray(0,12));c.setAuthTag(b.subarray(-16));return Buffer.concat([c.update(b.subarray(12,-16)),c.final()]).toString();};const client=await new authClient.Authorization({root,product,version:'1.0.0',trust:{url:x.origin,publicKey:x.app.store.publicKey,development:true},encrypt,decrypt,...props}).init();return {client,root,encrypt,decrypt};}
+test('IP只信任声明的代理，国家查询失败不会编造位置',async()=>{const req={socket:{remoteAddress:'::ffff:127.0.0.1'},headers:{'x-forwarded-for':'6.6.6.6, 8.8.8.8'}};assert.equal(requestIP(req,''),'127.0.0.1');assert.equal(requestIP(req,'127.0.0.1/32'),'8.8.8.8');assert.equal(requestIP(req,'127.0.0.1/32,8.8.8.8'),'6.6.6.6');const geo=createGeoLookup({lookup:async()=>({country_code:'US'})});assert.equal((await geo('8.8.8.8')).country,'US');assert.equal((await geo('172.20.1.1')).geoSource,'private-network');assert.equal((await createGeoLookup({lookup:async()=>{throw Error();}})('8.8.4.4')).country,'');});
+test('首次联网激活，重启离线使用，拒绝修改公钥与设备身份',async t=>{const x=await setup(t),c=await x.customer(),l=await x.issue(c.id),d=await desktop(t,x,l);assert.equal(d.client.status().valid,false);assert.equal((await d.client.activate(l.key,'ops.example.com')).valid,true);let online=false;d.client.fetcher=async(...args)=>{if(!online)throw Error('offline');return fetch(...args);};assert.equal((await d.client.check()).valid,true);const restart=await new authClient.Authorization({root:d.root,product:'packer',version:'1.0.0',trust:d.client.trust,encrypt:d.encrypt,decrypt:d.decrypt,fetcher:async()=>{throw Error();}}).init();assert.equal(restart.assert().licenseId,l.license.id);restart.data.deviceId='changed-device-0001';assert.throws(()=>restart.assert(),/身份/);});
+test('静默迁移新机器允许超过名额，重连补传不伪造离线IP并确认策略',async t=>{const x=await setup(t),c=await x.customer(),l=await x.issue(c.id,{authorizationMode:'silent-local'}),a=await desktop(t,x,l);await a.client.activate(l.key,'ops.example.com');const archive=await a.client.exportMigration('密码');const b=await desktop(t,x,l);await assert.rejects(b.client.importMigration(archive,'错误'),/密码/);const imported=await b.client.importMigration(archive,'密码');assert.equal(imported.status.valid,true);assert.notEqual(a.client.data.deviceId,b.client.data.deviceId);assert.equal((await b.client.check()).valid,true);const binding=x.app.store.state.bindings.find(v=>v.binding===b.client.data.deviceId);assert.equal(binding.parentDeviceId,a.client.data.deviceId);assert.ok(binding.policyAcknowledgedAt);const logs=(await x.call('/api/authorization-logs?licenseId='+l.license.id)).value;assert.ok(logs.items.some(v=>v.type==='offline-migration-import'&&v.ipMeaning.includes('not historical')));assert.ok(logs.items.every(v=>!JSON.stringify(v).includes(l.key)));});
+test('删除Key留下永久吊销身份，可信拒绝持久化，离线和旧租约不能恢复',async t=>{const x=await setup(t),c=await x.customer(),l=await x.issue(c.id,{authorizationMode:'silent-local'}),d=await desktop(t,x,l);await d.client.activate(l.key,'ops.example.com');const old=d.client.data.lease;await x.call('/api/licenses/'+l.license.id,'DELETE');assert.equal((await d.client.check()).valid,false);assert.equal(x.app.store.state.revocations[0].id,l.license.id);d.client.data.lease=old;d.client.fetcher=async()=>{throw Error('offline');};assert.equal((await d.client.check()).valid,false);await assert.rejects(d.client.exportMigration('密码'),/停止/);const restart=await new authClient.Authorization({root:d.root,product:'packer',version:'1.0.0',trust:d.client.trust,encrypt:d.encrypt,decrypt:d.decrypt}).init();assert.equal(restart.status().valid,false);assert.ok(x.app.store.state.authorizationLogs.some(v=>v.type==='authorization-denied'));});
+test('在线到期和时间回退阻止使用，策略恢复在线后不再允许离线迁移',async t=>{const x=await setup(t),c=await x.customer(),l=await x.issue(c.id,{authorizationMode:'silent-local'}),d=await desktop(t,x,l);await d.client.activate(l.key,'ops.example.com');await x.call('/api/licenses/'+l.license.id,'PATCH',{authorizationMode:'online'});assert.equal((await d.client.check()).valid,true);await assert.rejects(d.client.exportMigration('密码'),/静默/);const now=Date.now();d.client.clock=()=>now-600000;assert.throws(()=>d.client.assert(),/时间回退/);d.client.clock=()=>now+8*86400000;assert.throws(()=>d.client.assert(),/到期/);});

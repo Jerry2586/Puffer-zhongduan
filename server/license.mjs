@@ -57,13 +57,13 @@ export function activate(store, req, b, issuer) {
   if (!record && migrating(store))throw failure('迁移期间暂不接受新设备激活，已有激活可继续验证',503);
   if (!record) {
     const count = store.state.bindings.filter(x => x.licenseId === license.id && x.product === b.product && x.status === 'active').length;
-    if (count >= license.quotas[b.product]) throw failure('设备或站点授权名额已满', 409);
-    record = { id: crypto.randomUUID(), licenseId: license.id, product: b.product, binding, kind: b.product === 'operations' ? 'domain' : 'device', status: 'active', activatedAt: now() };
+    if (count >= license.quotas[b.product] && !verifiedMigration(store,b,license,currentPolicy)) throw failure('设备或站点授权名额已满', 409);
+    record = { id: crypto.randomUUID(), licenseId: license.id, product: b.product, binding, kind: b.product === 'operations' ? 'domain' : 'device', status: 'active', parentDeviceId:verifiedMigration(store,b,license,currentPolicy)?b.parentDeviceId:'', activatedAt: now() };
     store.state.bindings.unshift(record); store.audit('产品激活', record.id);
   }
-  Object.assign(record, { version: b.version, lastSeenAt: now(), label: String(b.label || '').slice(0, 80), domain:domain || record.domain || '', policyRevision:currentPolicy.revision, authorizationMode:currentPolicy.mode, policyFetchedAt:now() });
+  Object.assign(record, { version: b.version, lastSeenAt: now(), os:String(b.os||'').slice(0,80), label: String(b.label || '').slice(0, 80), domain:domain || record.domain || '', policyRevision:currentPolicy.revision, authorizationMode:currentPolicy.mode, policyFetchedAt:now() });
   const iat = Math.floor(Date.now() / 1000), days = store.state.settings.offlineDays;
-  const payload = { schemaVersion: 3, issuer, customerId:license.customerId, domain:domain || record.domain || '', authorizationMode:currentPolicy.mode, policyRevision:currentPolicy.revision, authorizedDomains:currentPolicy.domains, reconnectHours:currentPolicy.reconnectHours, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: currentPolicy.mode==='silent-local' ? Math.floor(Date.parse(license.expiresAt) / 1000) : Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, checkAfter: Math.min(iat + (currentPolicy.mode==='silent-local' ? currentPolicy.reconnectHours : store.state.settings.checkHours) * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
+  const payload = { schemaVersion: 4, issuer, offlineMigration:currentPolicy.mode==='silent-local', offlineDays:days, customerId:license.customerId, domain:domain || record.domain || '', authorizationMode:currentPolicy.mode, policyRevision:currentPolicy.revision, authorizedDomains:currentPolicy.domains, reconnectHours:currentPolicy.reconnectHours, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: currentPolicy.mode==='silent-local' ? Math.floor(Date.parse(license.expiresAt) / 1000) : Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, entitlement:license.entitlement||'term', checkAfter: Math.min(iat + (currentPolicy.mode==='silent-local' ? currentPolicy.reconnectHours : store.state.settings.checkHours) * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
   if(migrating(store)&&Number.isFinite(Date.parse(store.state.authority.graceUntil)))payload.exp=Math.max(payload.exp,Math.min(Math.floor(Date.parse(store.state.authority.graceUntil)/1000),Math.floor(Date.parse(license.expiresAt)/1000)));
   return { terminalConfig:configuration(store,issuer), activationId: record.id, lease: sign(store, payload), offlineDays: days, policy:currentPolicy };
 }
@@ -73,4 +73,9 @@ export function authorizedBinding(store, req, product) {
   if (!binding || !license.products.includes(binding.product) || (product && binding.product !== product)) throw failure('请先激活对应产品', 403);
   const domains=policy(store,license).domains;if(domains.length&&!domains.includes(binding.product==='operations'?binding.binding:binding.domain))throw failure('绑定域名不在当前授权范围',403);
   return { license, binding };
+}
+
+function verifiedMigration(store,b,license,currentPolicy) {
+ if(currentPolicy.mode!=='silent-local'||!b.parentDeviceId||!b.migrationLease)return false;
+ try {const e=b.migrationLease,bytes=Buffer.from(e.payload,'base64url');if(e.algorithm!=='Ed25519'||!crypto.verify(null,bytes,store.publicKey,Buffer.from(e.signature,'base64url')))return false;const p=JSON.parse(bytes);return p.licenseId===license.id&&p.product===b.product&&p.binding===b.parentDeviceId&&p.authorizationMode==='silent-local'&&p.offlineMigration===true&&p.domain===(b.domain||'')&&p.exp>Date.now()/1000&&store.state.bindings.some(x=>x.licenseId===license.id&&x.product===b.product&&x.binding===b.parentDeviceId&&x.status==='active');}catch{return false;}
 }

@@ -1,3 +1,4 @@
+import { authorizationLog, requestIP, createGeoLookup, knownLicense, filteredLogs, reportEvents } from './authorization-log.mjs';
 import { saveCommunication, changeCommunication, communicationFeed, acknowledgeCommunication, updateDistribution } from './communications.mjs';
 import { initializeAuthority, migrating, identity, configuration, startMigration, verifyDestination, finishMigration, acknowledge, progress, endpoint } from './authority.mjs';
 import { exportMigrationFile, receiveMigration, inspectMigrationFile } from './migration-stream.mjs';
@@ -35,6 +36,8 @@ export async function createTerminal(options) {
   if (!directHttp && !['127.0.0.1', 'localhost', '::1'].includes(host) && new URL(origin).protocol !== 'https:') throw Error('公网监听需要 HTTPS 站点地址');
   const updater = selfUpdater({directory:options.maintenanceDirectory || process.env.HETUN_TERMINAL_MAINTENANCE, revision:options.revision || process.env.HETUN_TERMINAL_REVISION || '', fetcher:options.updateFetch});
   const store = await openStore(root), sessions = new Map(), limits = new Map();
+  const geoLookup=createGeoLookup({lookup:options.geoLookup,fetcher:options.geoFetch,token:options.geoToken});
+  async function network(req){const ip=requestIP(req,options.trustedProxies);return {ip,...await geoLookup(ip)};}
   const secure = () => origin.startsWith('https:');
   const cookie = (value, maxAge = 28800) => 'puffer_session=' + value + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (secure() ? '; Secure' : '');
   function json(res, status, data) {
@@ -78,10 +81,10 @@ export async function createTerminal(options) {
     return s;
   }
   function readyAdmin(req, write = false) { const s = admin(req, write); if (store.admin.mustChange) throw failure('请先修改初始密码', 428); return s; }
-  function rate(req) {
-    const key = req.socket.remoteAddress, time = Date.now(), old = limits.get(key);
+  function rate(req,maximum=8,bucket="login") {
+    const key = bucket+":"+req.socket.remoteAddress, time = Date.now(), old = limits.get(key);
     if (!old || old.until < time) { if (limits.size > 5000) limits.clear(); limits.set(key, { count: 1, until: time + 300000 }); return; }
-    old.count++; if (old.count > 8) throw failure('登录尝试过多，请五分钟后再试', 429);
+    old.count++; if (old.count > maximum) throw failure('登录尝试过多，请五分钟后再试', 429);
   }
   function find(array, id, label) { const item = array.find(x => x.id === id); if (!item) throw failure(label + '不存在', 404); return item; }
   async function download(res, file, filename, hash) {
@@ -166,6 +169,8 @@ export async function createTerminal(options) {
       if (r === '/api/self-update' && m === 'GET') return json(res,200,await updater.status());
       if (r === '/api/self-update/check' && m === 'POST') return json(res,200,await updater.check());
       if (r === '/api/self-update/install' && m === 'POST') { const b=await body(req); const job=await updater.queue(b.revision); store.audit('请求终端 Git 更新',job.revision); await store.commit(); return json(res,202,job); }
+      if(r==='/api/authorization-logs'&&m==='GET')return json(res,200,filteredLogs(store,u.searchParams));
+      if(r==='/api/authorization-distribution'&&m==='GET')return json(res,200,{mode:store.state.settings.authorizationMode,revision:store.state.settings.policyRevision,devices:store.state.bindings.map(b=>({id:b.id,licenseId:b.licenseId,product:b.product,deviceId:b.binding,status:b.status,lastSeenAt:b.lastSeenAt,received:b.policyRevision===policy(store,store.state.licenses.find(l=>l.id===b.licenseId)||{}).revision,acknowledged:!!b.policyAcknowledgedAt&&b.policyRevision===policy(store,store.state.licenses.find(l=>l.id===b.licenseId)||{}).revision}))});
       if (r === '/api/authorization-policy' && m === 'PATCH') {
         const b=await body(req);if(!['online','silent-local'].includes(b.authorizationMode) || !Number.isInteger(b.reconnectHours) || b.reconnectHours<1 || b.reconnectHours>168)throw failure('授权模式或重连间隔无效');
         Object.assign(store.state.settings,{authorizationMode:b.authorizationMode,reconnectHours:b.reconnectHours,policyRevision:(store.state.settings.policyRevision||1)+1});
@@ -189,7 +194,7 @@ export async function createTerminal(options) {
       }
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { announcements:s.announcements, updatePushes:s.updatePushes, deliveryReceipts:s.deliveryReceipts, customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return rest; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.3' });
+        return json(res, 200, { announcements:s.announcements, updatePushes:s.updatePushes, deliveryReceipts:s.deliveryReceipts, customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return {...rest,...(artifact?{artifact:artifact.filename,bytes:artifact.bytes,sha256:artifact.sha256}:{})}; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.3' });
       }
       if(r==='/api/integrations' && m==='GET') {
         let deployment=null;
@@ -227,21 +232,33 @@ export async function createTerminal(options) {
         const quotas = {}; for (const p of PRODUCTS) { quotas[p] = Number(b.quotas?.[p] ?? (p === 'operations' ? 1 : 2)); if (!Number.isInteger(quotas[p]) || quotas[p] < 1 || quotas[p] > 100) throw failure('授权名额必须为 1–100'); }
         const fields=policyFields(b);
         const key = 'HTN_' + crypto.randomBytes(32).toString('base64url');
-        const l = { ...fields, policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label || '三产品授权').slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
+        const l = { ...fields, policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label?.trim() || (b.products.length===3?'三产品统一授权':b.products.map(p=>({'theme-center':'主题中心',packer:'打包器',operations:'影视中心'}[p])).join('、')+'授权')).slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
         store.state.licenses.unshift(l); store.audit('签发授权', l.id); await store.commit(); return json(res, 201, { license: publicLicense(l), key });
       }
       const lr = r.match(/^\/api\/licenses\/([a-f0-9-]{36})(\/rotate)?$/);
       if (lr) {
         const l = find(store.state.licenses, lr[1], '授权');
+        if(m==='DELETE'&&!lr[2]){
+          store.state.licenses=store.state.licenses.filter(x=>x.id!==l.id);
+          store.state.revocations.unshift({...l,status:'revoked',revokedAt:now(),reason:'deleted'});
+          for(const b of store.state.bindings.filter(x=>x.licenseId===l.id))b.status='disabled';
+          cancelUnauthorizedJobs();
+          store.audit('删除授权',l.id);await store.commit();return json(res,200,{ok:true});
+        }
         if (m === 'PATCH' && !lr[2]) {
           const b = await body(req);
-          const fields=policyFields(b); if(Object.keys(fields).length) {Object.assign(l,fields);l.policyRevision=(l.policyRevision||1)+1;store.audit('修改客户授权模式或域名',l.id);}
-          if (b.permissions !== undefined) {if(!b.permissions || ['sourceDownload','localBuild','cloudBuild'].some(k=>typeof b.permissions[k]!=='boolean'))throw failure('权限格式无效');l.permissions={sourceDownload:b.permissions.sourceDownload,localBuild:b.permissions.localBuild,cloudBuild:b.permissions.cloudBuild};l.policyRevision=(l.policyRevision||1)+1;}
-          if (b.status !== undefined) { if (!['active', 'disabled'].includes(b.status)) throw failure('授权状态无效'); l.status = b.status; }
-          if (b.expiresAt !== undefined) { const exp = Date.parse(b.expiresAt); if (!Number.isFinite(exp) || exp <= Date.now()) throw failure('续期时间必须在未来'); l.expiresAt = new Date(exp).toISOString(); }
-          cancelUnauthorizedJobs(); store.audit('修改授权状态或续期', l.id); await store.commit(); return json(res, 200, publicLicense(l));
+          // Validate the complete edit before changing any stored authorization fields.
+          const fields=policyFields(b), changes={...fields};
+          if(b.products!==undefined){if(!Array.isArray(b.products)||!b.products.length||new Set(b.products).size!==b.products.length||b.products.some(p=>!PRODUCTS.includes(p)))throw failure('至少选择一个有效授权产品');changes.products=[...b.products];}
+          if(b.label!==undefined){if(typeof b.label!=='string'||!b.label.trim()||b.label.trim().length>80)throw failure('授权名称必须为 1–80 字');changes.label=b.label.trim();}
+          if(b.quotas!==undefined){const quotas={};for(const p of PRODUCTS){quotas[p]=Number(b.quotas?.[p]);if(!Number.isInteger(quotas[p])||quotas[p]<1||quotas[p]>100)throw failure('授权名额必须为 1–100');if((changes.products||l.products).includes(p)&&store.state.bindings.filter(x=>x.licenseId===l.id&&x.product===p&&x.status==='active').length>quotas[p])throw failure('名额不能低于该产品当前有效绑定数量',409);}changes.quotas=quotas;}
+          if(b.permissions!==undefined){if(!b.permissions||['sourceDownload','localBuild','cloudBuild'].some(k=>typeof b.permissions[k]!=='boolean'))throw failure('权限格式无效');changes.permissions={sourceDownload:b.permissions.sourceDownload,localBuild:b.permissions.localBuild,cloudBuild:b.permissions.cloudBuild};}
+          if(b.status!==undefined){if(!['active','disabled'].includes(b.status))throw failure('授权状态无效');changes.status=b.status;}
+          if(b.expiresAt!==undefined){const exp=Date.parse(b.expiresAt);if(!Number.isFinite(exp)||exp<=Date.now())throw failure('续期时间必须在未来');changes.expiresAt=new Date(exp).toISOString();}
+          Object.assign(l,changes);if(Object.keys(changes).length)l.policyRevision=(l.policyRevision||1)+1;
+          cancelUnauthorizedJobs();store.audit('修改统一授权',l.id);await store.commit();return json(res,200,publicLicense(l));
         }
-        if (m === 'POST' && lr[2]) { const key = 'HTN_' + crypto.randomBytes(32).toString('base64url'); l.keyHash = sha(key); store.audit('轮换授权 Key', l.id); await store.commit(); return json(res, 200, { key }); }
+        if (m === 'POST' && lr[2]) { const key = 'HTN_' + crypto.randomBytes(32).toString('base64url'); store.state.revocations.unshift({...l,status:'revoked',revokedAt:now(),reason:'key-rotated'}); l.keyHash = sha(key); l.policyRevision=(l.policyRevision||1)+1; store.audit('轮换授权 Key', l.id); await store.commit(); return json(res, 200, { key }); }
       }
       const br = r.match(/^\/api\/bindings\/([a-f0-9-]{36})$/);
       if (br && m === 'PATCH') { const b = await body(req), binding = find(store.state.bindings, br[1], '绑定'); if (!['active', 'disabled'].includes(b.status)) throw failure('绑定状态无效'); if (b.status === 'active') { const l = find(store.state.licenses, binding.licenseId, '授权'); if (store.state.bindings.filter(x => x.id !== binding.id && x.licenseId === l.id && x.product === binding.product && x.status === 'active').length >= l.quotas[binding.product]) throw failure('名额已满', 409); } binding.status = b.status; store.audit('修改绑定状态', binding.id); await store.commit(); return json(res, 200, binding); }
@@ -274,7 +291,24 @@ export async function createTerminal(options) {
       throw failure('管理接口不存在', 404);
     }
     if (r === '/v1/license/public-key' && m === 'GET') return json(res, 200, { issuer: externalOrigin, algorithm: 'Ed25519', keyId: sha(store.publicKey).slice(0, 16), publicKey: store.publicKey });
-    if (['/v1/license/activate', '/v1/license/check'].includes(r) && m === 'POST') { const result = activate(store, req, await body(req), externalOrigin); await store.commit(); return json(res, 200, result); }
+    if (['/v1/license/activate', '/v1/license/check'].includes(r) && m === 'POST') {
+      rate(req,120,"authorization");const b=await body(req),known=knownLicense(store,req),net=await network(req);
+      try {
+        const previous=store.state.bindings.find(x=>x.licenseId===known?.id&&x.product===b.product&&x.binding===(b.product==='operations'?b.domain:b.deviceId));
+        const last=previous?.lastSeenAt,oldRevision=previous?.policyRevision;
+        const result=activate(store,req,b,externalOrigin),binding=store.state.bindings.find(x=>x.id===result.activationId);
+        Object.assign(binding,net,{machineId:String(b.machineId||b.deviceId||'').slice(0,120)});
+        if(oldRevision!==binding.policyRevision)binding.policyAcknowledgedAt=null;
+        if(!previous||oldRevision!==binding.policyRevision||!last||Date.now()-Date.parse(last)>86400000)authorizationLog(store,{licenseId:known.id,activationId:binding.id,product:binding.product,deviceId:binding.binding,type:previous?'check':'activation',result:'accepted',policyRevision:binding.policyRevision,mode:binding.authorizationMode,...net});
+        await store.commit();return json(res,200,result);
+      }catch(e){
+        const status=e.status||400,validIdentity=PRODUCTS.includes(b.product)&&/^[A-Za-z0-9_-]{16,100}$/.test(b.nonce||'')&&typeof b.deviceId==='string'&&b.deviceId.length<=120;
+        if(known)authorizationLog(store,{licenseId:known.id,product:PRODUCTS.includes(b.product)?b.product:'',deviceId:String(b.deviceId||'').slice(0,120),type:'authorization-denied',result:'denied',reason:String(e.message).slice(0,160),...net});
+        const denial=known&&validIdentity&&status>=400&&status<500?sign(store,{type:'hetun-authorization-denial',issuer:externalOrigin,licenseId:known.id,product:b.product,binding:b.product==='operations'?b.domain:b.deviceId,nonce:b.nonce,iat:Math.floor(Date.now()/1000),policyRevision:policy(store,known).revision,reason:e.message}):undefined;
+        await store.commit();return json(res,status,{error:e.message,denial});
+      }
+    }
+    if(r==='/v1/license/events'&&m==='POST'){const {license,binding}=authorizedBinding(store,req),result=reportEvents(store,license,binding,await body(req),await network(req));await store.commit();return json(res,200,result);}
     if (r === '/v1/records' && m === 'POST') {const {license,binding}=authorizedBinding(store,req);const result=recordEvent(store,license,binding,await body(req));await store.commit();return json(res,result.duplicate?200:201,result);}
     if (r === '/v1/records' && m === 'GET') {const {license}=authorizedBinding(store,req);return json(res,200,{records:store.state.productRecords.filter(x=>x.licenseId===license.id).slice(0,100)});}
     if (r === '/v1/templates' && m === 'GET') {const {binding}=authorizedBinding(store,req);if(!['theme-center','packer'].includes(binding.product))throw failure('请激活主题中心或打包器',403);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.kind==='theme').map(publicRelease)}));}
@@ -288,7 +322,7 @@ export async function createTerminal(options) {
     if (cr && m === 'GET') { const release = find(store.state.releases, cr[1], '版本'); releaseAccess(req, release); return download(res, release.file, release.filename, release.sha256); }
     if (r === '/v1/jobs') { const { license } = authorizedBinding(store, req, 'packer'); if (!license.permissions.cloudBuild) throw failure('未授权在线构建', 403); if (m === 'GET') return json(res, 200, { jobs: store.state.jobs.filter(j => j.owner === license.id).map(j => { const { artifact, ...rest } = j; return rest; }) }); if (m === 'POST') { const job = createJob(store, await body(req), license.id); await store.commit(); return json(res, 201, job); } }
     const customerJob = r.match(/^\/v1\/jobs\/([a-f0-9-]{36})(\/artifact)?$/);
-    if (customerJob && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); if (!license.permissions.cloudBuild) throw failure('未授权在线构建', 403); const job = find(store.state.jobs.filter(j => j.owner === license.id), customerJob[1], '任务'); if (customerJob[2]) { if (job.status !== 'complete') throw failure('任务没有成品', 409); return download(res, job.artifact.file, job.artifact.filename, job.artifact.sha256); } const { artifact, ...rest } = job; return json(res, 200, rest); }
+    if (customerJob && m === 'GET') { const { license } = authorizedBinding(store, req, 'packer'); if (!license.permissions.cloudBuild) throw failure('未授权在线构建', 403); const job = find(store.state.jobs.filter(j => j.owner === license.id), customerJob[1], '任务'); if (customerJob[2]) { if (job.status !== 'complete') throw failure('任务没有成品', 409); return download(res, job.artifact.file, job.artifact.filename, job.artifact.sha256); } const { artifact, ...rest } = job; return json(res, 200, {...rest,...(artifact?{artifact:artifact.filename,bytes:artifact.bytes,sha256:artifact.sha256}:{})}); }
     if (r.startsWith('/v1/worker/')) {
       const node = worker(req);
       if (r === '/v1/worker/claim' && m === 'POST') {
