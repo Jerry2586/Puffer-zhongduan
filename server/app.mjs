@@ -1,3 +1,5 @@
+import { acquireInstance } from './instance.mjs';
+import { createAuthorizationWatch, authorizationMutation } from './authorization-watch.mjs';
 import { updateSoftware } from './software-update.mjs';
 import { authorizationLog, requestIP, createGeoLookup, knownLicense, filteredLogs, reportEvents } from './authorization-log.mjs';
 import { saveCommunication, sendSoftwarePush, changeCommunication, communicationFeed, acknowledgeCommunication, updateDistribution } from './communications.mjs';
@@ -36,6 +38,8 @@ export async function createTerminal(options) {
   origin = validateOrigin(origin);
   if (!directHttp && !['127.0.0.1', 'localhost', '::1'].includes(host) && new URL(origin).protocol !== 'https:') throw Error('公网监听需要 HTTPS 站点地址');
   const updater = selfUpdater({directory:options.maintenanceDirectory || process.env.HETUN_TERMINAL_MAINTENANCE, revision:options.revision || process.env.HETUN_TERMINAL_REVISION || '', fetcher:options.updateFetch});
+  const releaseInstance = await acquireInstance(root);
+  try {
   const store = await openStore(root), sessions = new Map(), limits = new Map();
   const geoLookup=createGeoLookup({lookup:options.geoLookup,fetcher:options.geoFetch,token:options.geoToken});
   async function network(req){const ip=requestIP(req,options.trustedProxies);return {ip,...await geoLookup(ip)};}
@@ -119,6 +123,7 @@ export async function createTerminal(options) {
     }
     return changed;
   }
+  const watchers=createAuthorizationWatch();
   async function handle(req, res) {
     const externalOrigin = requestOrigin(req);
     const u = new URL(req.url, externalOrigin), r = u.pathname, m = req.method;
@@ -321,6 +326,7 @@ export async function createTerminal(options) {
     if (r === '/v1/templates' && m === 'GET') {const {binding}=authorizedBinding(store,req);if(!['theme-center','packer'].includes(binding.product))throw failure('请激活主题中心或打包器',403);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.kind==='theme').map(publicRelease)}));}
     if (r === '/v1/product-catalog' && m === 'GET') {const {license,binding}=authorizedBinding(store,req);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,product:binding.product,checkedAt:now(),releases:store.state.releases.filter(x=>x.status==='published'&&x.product===binding.product&&(x.kind!=='product-source'||license.permissions.sourceDownload)).map(publicRelease)}));}
     if (r === '/v1/updates' && m === 'GET') { const product = u.searchParams.get('product'), {license,binding}=authorizedBinding(store, req, product); return json(res, 200, updateManifest(store, product, u.searchParams.get('version'), u.searchParams.get('platform'), u.searchParams.get('arch') || 'any', u.searchParams.get('channel') || 'stable', externalOrigin, updateDistribution(store,license,binding))); }
+    if(r==='/v1/license/watch' && m==='GET') {const {binding}=authorizedBinding(store,req);watchers.add(res,binding);return;}
     if(r==='/v1/notifications' && m==='GET') {const {license,binding}=authorizedBinding(store,req);return json(res,200,sign(store,{schemaVersion:1,issuer:externalOrigin,product:binding.product,activationId:binding.id,checkedAt:now(),items:communicationFeed(store,license,binding)}));}
     if(r==='/v1/notifications/ack' && m==='POST') {const {license,binding}=authorizedBinding(store,req),receipt=acknowledgeCommunication(store,license,binding,await body(req));await store.commit();return json(res,200,{ok:true,status:receipt.status});}
     if (r === '/v1/installations/report' && m === 'POST') { const { license, binding } = authorizedBinding(store, req), b = await body(req); if (!VERSION.test(b.version || '') || !['current', 'updating', 'failed'].includes(b.updateStatus)) throw failure('安装状态无效'); if(b.eventId) recordEvent(store,license,binding,{eventId:b.eventId,type:b.updateStatus==='failed'?'update-failed':b.updateStatus==='current'?'update-success':'update-check',version:b.version,occurredAt:b.occurredAt,details:{message:String(b.error||'').slice(0,300)}}); Object.assign(binding, { version: b.version, updateStatus: b.updateStatus, updateError: String(b.error || '').slice(0, 300), lastSeenAt: now() }); await store.commit(); return json(res, 200, { ok: true }); }
@@ -374,6 +380,7 @@ export async function createTerminal(options) {
     throw failure('接口不存在', 404);
   }
   const server = http.createServer({ maxHeaderSize: 65536 }, (req, res) => {
+    if(authorizationMutation(req.url,req.method))res.once('finish',()=>{if(res.statusCode<400)watchers.notify();});
     const run = () => handle(req, res);
     const task = ['POST', 'PATCH', 'DELETE'].includes(req.method) ? store.serial(run) : run();
     task.catch(e => { if (!res.headersSent) json(res, e.status || 500, { error: e.status ? e.message : '服务内部错误，请检查运行日志' }); else res.end(); if (!e.status) console.error(e.message); });
@@ -384,5 +391,33 @@ export async function createTerminal(options) {
     for (const job of store.state.jobs) if (job.status === 'running' && Date.parse(job.heartbeatAt) < Date.now() - 300000) { job.status = 'failed'; job.error = '构建节点超过五分钟未报告状态'; job.finishedAt = now(); changed = true; }
     if (changed) await store.commit();
   }).catch(e => console.error(e.message)), 30000); timer.unref();
-  return { server, store, get origin() { return origin; }, async listen() { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); }); if (port === 0 && !options.origin) origin = 'http://127.0.0.1:' + server.address().port; return origin; }, async close() { clearInterval(timer); server.closeIdleConnections(); await new Promise(resolve => server.close(resolve)); } };
+  let closing;
+  async function close() {
+    if (closing) return closing;
+    closing = (async () => {
+      clearInterval(timer);
+      watchers.close();
+      const stopped = new Promise(resolve => server.close(resolve));
+      server.closeIdleConnections();
+      const deadline = setTimeout(() => server.closeAllConnections(), 5000);
+      deadline.unref();
+      try { await stopped; await store.drain(); }
+      finally { clearTimeout(deadline); await releaseInstance(); }
+    })();
+    return closing;
+  }
+  return { server, store, get origin() { return origin; }, close, async listen() {
+    if (closing) throw Error('终端已经关闭');
+    if (server.listening) return origin;
+    try {
+      await new Promise((resolve, reject) => {
+        const failed = error => { server.removeListener('listening', ready); reject(error); };
+        const ready = () => { server.removeListener('error', failed); resolve(); };
+        server.once('error', failed); server.once('listening', ready); server.listen(port, host);
+      });
+    } catch (error) { await close(); throw error; }
+    if (port === 0 && !options.origin) origin = 'http://127.0.0.1:' + server.address().port;
+    return origin;
+  } };
+  } catch (error) { await releaseInstance(); throw error; }
 }

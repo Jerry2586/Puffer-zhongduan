@@ -1,6 +1,6 @@
 # 河豚终端对接协议 v1
 
-本版提供终端侧 API，三个现有产品后续接入。域名 HTTPS 模式的请求使用 HTTPS；明确启用无域名直连时支持 HTTP IP:端口，管理员 API 仍校验 Origin 与 CSRF；JSON 请求使用 Content-Type: application/json。Key 和构建节点令牌不得放在 URL、Git 或日志中。
+本版提供终端侧 API。主题客户端已接入授权、公告、更新检查和元数据记录；打包器、影视中心及正式安装包升级仍须分别验收。域名 HTTPS 模式的请求使用 HTTPS；明确启用无域名直连时支持 HTTP IP:端口，管理员 API 仍校验 Origin 与 CSRF；JSON 请求使用 Content-Type: application/json。Key 和构建节点令牌不得放在 URL、Git 或日志中。
 
 ## 激活与离线凭据
 
@@ -14,9 +14,9 @@ POST /v1/license/activate 和 POST /v1/license/check 均提交 Authorization: Be
 
 product 为 theme-center、packer、operations。前两者提交 deviceId（8–120 个字母、数字、下划线、冒号或横杠）；operations 提交 domain（完整域名，无路径或端口）。nonce 实际必须为 16–100 个 base64url 字符，每次请求随机生成。version 使用三段版本号。返回 activationId、offlineDays 和 lease。
 
-lease 结构：algorithm=Ed25519、keyId、payload、signature。payload 和 signature 均为 base64url；**验签对象是解码后的 payload 原始字节，不能重新序列化 JSON 后验签**。解码后的字段包括 schemaVersion=2、issuer、licenseId、activationId、product、binding、nonce、iat、exp、licenseExpiresAt、checkAfter、permissions。时间为 Unix 秒。
+lease 结构：algorithm=Ed25519、keyId、payload、signature。payload 和 signature 均为 base64url；**验签对象是解码后的 payload 原始字节，不能重新序列化 JSON 后验签**。解码后的字段包括 schemaVersion=4、issuer、licenseId、activationId、product、binding、nonce、iat、exp、licenseExpiresAt、checkAfter、permissions。时间为 Unix 秒。
 
-客户端必须验签、匹配受信 issuer/keyId、自身产品及绑定、此次 nonce，并校验签发与到期时间。缓存后离线验证不再匹配新 nonce，而是校验已缓存签名和绑定。在 checkAfter 后尝试联网复查；暂时断网仅可用至 exp。联网得到拒绝需立即停用受限功能。系统时间回拨防护、安全存储由客户端负责。服务端默认每 24 小时复查、最长离线 7 天，可在设置中修改，实际 exp 不超过授权到期时间。
+客户端必须验签、匹配受信 issuer/keyId、自身产品及绑定、此次 nonce，并校验签发与到期时间。缓存后离线验证不再匹配新 nonce，而是校验已缓存签名和绑定。在 checkAfter 后尝试联网复查；暂时断网仅可用至 exp。联网得到拒绝需立即停用受限功能。系统时间回拨防护、安全存储由客户端负责。online 服务端租约使用设置中的 checkHours/offlineDays，exp 不超过授权到期时间；主题客户端另执行每次启动认证及 30 秒认证新鲜度规则。silent-local 的 exp 为授权到期时间，按 reconnectHours 静默重连。客户端必须区分可信拒绝与网络故障。payload 还含 authorizationMode、policyRevision、authorizedDomains、reconnectHours、entitlement 和 offlineMigration；详见 architecture.md。
 
 ## 更新、目录和成品
 

@@ -120,3 +120,23 @@ test('页面按内容版本加载资源，CDN缓存旧地址不会影响新版�
  }
  assert.equal((await s.call('/assets/'+'0'.repeat(64)+'/../server/app.mjs')).status,404);
 });
+
+
+test('真实通知连接收到授权撤销，重新认证拒绝且关闭服务清理连接', async t => {
+  const x = await setup(t), customer = await x.customer(), issued = await x.issue(customer.id);
+  const activation = await x.activate(issued.key);
+  const headers = { Authorization: 'Bearer ' + issued.key, 'X-Hetun-Activation': activation.value.activationId };
+  const controller = new AbortController(); t.after(() => controller.abort());
+  const stream = await fetch(x.origin + '/v1/license/watch', { headers, signal: controller.signal });
+  assert.equal(stream.status, 200);
+  const reader = stream.body.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /connected/);
+  assert.equal((await x.call('/api/licenses/' + issued.license.id, 'DELETE')).status, 200);
+  const notice = await Promise.race([reader.read(), new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(Error('未收到授权撤销通知')), 2000); timer.unref();
+  })]);
+  assert.match(new TextDecoder().decode(notice.value), /event: authorization/);
+  assert.equal((await x.call('/v1/notifications', 'GET', undefined, headers, false)).status, 403);
+  await x.app.close();
+  await reader.read().catch(() => ({ done: true }));
+});

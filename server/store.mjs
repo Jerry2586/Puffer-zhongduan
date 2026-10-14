@@ -86,6 +86,7 @@ export async function openStore(root) {
       tail = run;
       return run;
     },
+    drain: () => tail.catch(() => {}),
     async changePassword(password) {
       const next = { username: 'admin', ...await passwordRecord(password), mustChange: false };
       await atomic(path.join(root, 'admin.json'), next);
