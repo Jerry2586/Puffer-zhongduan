@@ -1,5 +1,6 @@
+import { updateSoftware } from './software-update.mjs';
 import { authorizationLog, requestIP, createGeoLookup, knownLicense, filteredLogs, reportEvents } from './authorization-log.mjs';
-import { saveCommunication, changeCommunication, communicationFeed, acknowledgeCommunication, updateDistribution } from './communications.mjs';
+import { saveCommunication, sendSoftwarePush, changeCommunication, communicationFeed, acknowledgeCommunication, updateDistribution } from './communications.mjs';
 import { initializeAuthority, migrating, identity, configuration, startMigration, verifyDestination, finishMigration, acknowledge, progress, endpoint } from './authority.mjs';
 import { exportMigrationFile, receiveMigration, inspectMigrationFile } from './migration-stream.mjs';
 import { createReadStream } from 'node:fs';
@@ -147,6 +148,7 @@ export async function createTerminal(options) {
     if (r.startsWith('/api/')) {
       readyAdmin(req, m !== 'GET');
       if(migrating(store)&&m!=='GET'&&!r.startsWith('/api/migration/'))throw failure('终端迁移中，业务修改暂时冻结；可继续查看或取消迁移',409);
+      if(r==='/api/update-pushes/send'&&m==='POST'){const result=sendSoftwarePush(store,await body(req));await store.commit();return json(res,201,result);}
       const notificationRoute=r.match(/^\/api\/(announcements|update-pushes)(?:\/([a-f0-9-]{36}))?$/);
       if(notificationRoute) {
         const kind=notificationRoute[1]==='update-pushes'?'update':'announcement', id=notificationRoute[2];
@@ -181,9 +183,10 @@ export async function createTerminal(options) {
         if(!Number.isSafeInteger(offset)||offset<0)throw failure('分页参数无效');
         const records=store.state.productRecords.filter(x=>(!licenseId||x.licenseId===licenseId)&&(!product||x.product===product));return json(res,200,{total:records.length,offset,records:records.slice(offset,offset+100)});
       }
-      const repoRoute=r.match(/^\/api\/repositories\/([a-z-]+)(?:\/(check|import))?$/);
+      const repoRoute=r.match(/^\/api\/repositories\/([a-z-]+)(?:\/(check|import|update))?$/);
       if(repoRoute){const p=repoRoute[1];if(!RESOURCES.includes(p))throw failure('产品无效');
         if(m==='PATCH'&&!repoRoute[2]){const config=setRepository(store,p,await body(req));await store.commit();return json(res,200,config);}
+        if(m==='POST'&&repoRoute[2]==='update'){await body(req);return json(res,200,await updateSoftware(store,p,options.repositoryFetch));}
         if(m==='POST'&&repoRoute[2]==='check'){await body(req);return json(res,200,await checkRepository(store,p,options.repositoryFetch));}
         if(m==='POST'&&repoRoute[2]==='import'){
           const b=await body(req),meta=b.metadata||{};

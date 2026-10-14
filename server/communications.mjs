@@ -27,7 +27,9 @@ function audience(store, input) {
   const customerIds = input.customerIds ?? [];
   if (!Array.isArray(products) || !products.length || products.length > 3 || products.some(p=>!PRODUCTS.includes(p)) || new Set(products).size !== products.length) throw failure('请选择授权产品');
   if (!Array.isArray(customerIds) || customerIds.length > 1000 || new Set(customerIds).size !== customerIds.length || customerIds.some(id=>!store.state.customers.some(c=>c.id===id))) throw failure('客户范围无效');
-  return { products, customerIds };
+  const licenseIds=input.licenseIds??[];
+  if(!Array.isArray(licenseIds)||licenseIds.length>1000||new Set(licenseIds).size!==licenseIds.length||licenseIds.some(id=>typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||(!store.validateHistorical&&!store.state.licenses.some(l=>l.id===id))))throw failure('授权范围无效');
+  return { products, customerIds, licenseIds };
 }
 export function saveCommunication(store, kind, input, id) {
   initializeCommunications(store.state);
@@ -56,6 +58,14 @@ export function saveCommunication(store, kind, input, id) {
   store.audit(kind==='update'?'保存更新推送':'保存公告',value.id);
   return value;
 }
+export function sendSoftwarePush(store,input) {
+  if(!PRODUCTS.includes(input.product)||!VERSION.test(input.version||''))throw failure('产品或版本无效');
+  const releases=store.state.releases.filter(r=>r.product===input.product&&r.version===input.version&&r.channel==='stable'&&['software','installer'].includes(r.kind)&&r.status==='published');
+  if(!releases.length)throw failure('该版本没有已发布的正式成品',409);
+  const shadow={state:{...store.state,announcements:[],updatePushes:[]},audit(){}};
+  const pushes=releases.map(r=>{const n=saveCommunication(shadow,'update',{...input,title:input.title||input.product+' v'+input.version,content:input.content??r.notes,products:[input.product],releaseId:r.id});return changeCommunication(shadow,'update',n.id,'published');});
+  store.state.updatePushes.unshift(...pushes);store.audit('推送产品版本',input.product+' '+input.version);return {pushes,count:pushes.length};
+}
 export function changeCommunication(store,kind,id,status) {
   const list=kind==='update'?store.state.updatePushes:store.state.announcements;
   const item=list.find(x=>x.id===id);
@@ -76,12 +86,12 @@ export function live(item, at=Date.now()) {
   return item.status==='published' && (!item.startsAt || Date.parse(item.startsAt)<=at) && (!item.endsAt || Date.parse(item.endsAt)>at);
 }
 export function visible(store,item,license,binding,at=Date.now()) {
-  return live(item,at) && item.products.includes(binding.product) && (!item.customerIds.length || item.customerIds.includes(license.customerId)) && (!item.releaseId || store.state.releases.some(r=>r.id===item.releaseId && r.status==='published'));
+  return live(item,at) && item.products.includes(binding.product) && (!item.customerIds.length || item.customerIds.includes(license.customerId)) && (!item.licenseIds?.length || item.licenseIds.includes(license.id)) && (!item.releaseId || store.state.releases.some(r=>r.id===item.releaseId && r.status==='published'));
 }
 export function communicationFeed(store,license,binding) {
   return [...store.state.announcements,...store.state.updatePushes].filter(x=>visible(store,x,license,binding)).map(x=>{
     const receipt=store.state.deliveryReceipts.find(r=>r.notificationId===x.id && r.revision===x.revision && r.bindingId===binding.id);
-    const {customerIds,...publicItem}=x; return {...publicItem,receipt:receipt?{status:receipt.status,updatedAt:receipt.updatedAt}:null};
+    const {customerIds,licenseIds,...publicItem}=x; return {...publicItem,receipt:receipt?{status:receipt.status,updatedAt:receipt.updatedAt}:null};
   });
 }
 export function acknowledgeCommunication(store,license,binding,input) {
@@ -124,7 +134,7 @@ export function validateCommunications(state) {
     for(const x of state[key]) {
       if(!x || typeof x.id!=='string' || ids.has(x.id) || x.kind!==kind || !Number.isInteger(x.revision) || x.revision<1 || !['draft','published','withdrawn'].includes(x.status))throw failure('迁移通知数据无效');
       ids.add(x.id);
-      saveCommunication({state:{...state,announcements:[],updatePushes:[]},audit(){}},kind,x);
+      saveCommunication({state:{...state,announcements:[],updatePushes:[]},validateHistorical:true,audit(){}},kind,x);
     }
   }
   if(state.deliveryReceipts.some(x=>!x || typeof x.id!=='string' || typeof x.bindingId!=='string' || !Array.isArray(x.events)))throw failure('迁移接收记录无效');

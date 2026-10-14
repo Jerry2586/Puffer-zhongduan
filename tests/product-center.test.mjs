@@ -147,3 +147,30 @@ test('客户与授权一次创建、失败不留空客户、已有客户复用�
  const edit=await x.call('/api/licenses/'+id,'PATCH',{customer:{name:'新客户名',contact:'新联系方式'},label:'统一新授权名'});assert.equal(edit.status,200);assert.equal(x.app.store.state.customers.find(c=>c.id===cid).name,'新客户名');assert.equal(x.app.store.state.licenses.find(l=>l.id===again.value.license.id).customerId,cid);assert.equal((await x.activate(created.value.key)).status,200);
  const stored=JSON.parse(await fs.readFile(path.join(x.root,'data.json'),'utf8'));assert.equal(stored.customers.find(c=>c.id===cid).name,'新客户名');assert.equal(stored.licenses.filter(l=>l.customerId===cid).length,2);
 });
+
+
+test('一键 Git 更新校验全部成品后自动发布、忽略源码和辅助文件、重复更新去重',async t=>{
+ const exe=Buffer.from('MZreal-installer-fixture'),zip=makeZip(new Map([['app.txt','portable fixture']]));let damaged=false;
+ const assets=[{id:501,name:'Puffer-setup-x64.exe',bytes:exe},{id:502,name:'Puffer-portable-windows-x64.zip',bytes:zip},{id:503,name:'source.zip',bytes:zip},{id:504,name:'manifest.json',bytes:Buffer.from('{}')}];
+ const repositoryFetch=async url=>url.includes('/commits/')?Response.json({sha:'c'.repeat(40),commit:{message:'source change'}}):url.includes('/releases/assets/')?new Response(damaged&&url.endsWith('/502')?Buffer.from('bad'):assets.find(a=>url.endsWith('/'+a.id)).bytes):Response.json([{id:20,tag_name:'v2.0.0',name:'正式产品',body:'完整更新说明',published_at:new Date().toISOString(),assets:assets.map(a=>({id:a.id,name:a.name,state:'uploaded',size:a.bytes.length,digest:'sha256:'+crypto.createHash('sha256').update(a.bytes).digest('hex')}))}]);
+ const x=await setup(t,{repositoryFetch});damaged=true;
+ assert.equal((await x.call('/api/repositories/packer/update','POST',{})).status,409);assert.equal(x.app.store.state.releases.length,0);
+ damaged=false;const updated=await x.call('/api/repositories/packer/update','POST',{});assert.equal(updated.status,200);assert.equal(updated.value.updated,true);assert.equal(updated.value.releases.length,2);assert.ok(updated.value.releases.every(r=>r.status==='published'&&r.version==='2.0.0'));assert.equal(x.app.store.state.updatePushes.length,0);
+ const again=await x.call('/api/repositories/packer/update','POST',{});assert.equal(again.status,200);assert.equal(again.value.updated,false);assert.equal(x.app.store.state.releases.length,2);await x.restart();assert.equal(x.app.store.state.releases.length,2);
+});
+test('仅有源码的正式 Release 不发布软件，Git 失败保留已发布成品',async t=>{
+ let fail=false;const repositoryFetch=async url=>fail?new Response('',{status:503}):url.includes('/commits/')?Response.json({sha:'d'.repeat(40),commit:{message:'only source'}}):Response.json([{id:30,tag_name:'v3.0.0',published_at:new Date().toISOString(),assets:[{id:601,name:'source.zip',state:'uploaded',size:4}]}]);
+ const x=await setup(t,{repositoryFetch});const result=await x.call('/api/repositories/operations/update','POST',{});assert.equal(result.status,200);assert.equal(result.value.updated,false);assert.equal(x.app.store.state.releases.length,0);
+ const m={kind:'software',product:'operations',platform:'linux',version:'1.0.0',name:'旧版',notes:'保留旧版',filename:'operations.tar.gz'};
+ const old=(await x.call('/api/releases','POST',Buffer.from([31,139,0,0]),{'Content-Type':'application/octet-stream','X-Release-Metadata':encodeURIComponent(JSON.stringify(m))}));assert.equal(old.status,201);await x.call('/api/releases/'+old.value.id,'PATCH',{status:'published'});fail=true;assert.equal((await x.call('/api/repositories/operations/update','POST',{})).status,502);assert.equal(x.app.store.state.releases[0].status,'published');
+});
+test('按 Key 批量推送一个版本，同一客户其他 Key 不接收，失败不产生部分推送',async t=>{
+ const x=await setup(t),c=await x.customer('同客户两个Key'),l=await x.issue(c.id),other=await x.issue(c.id);const a=await x.activate(l.key),b=await x.activate(other.key);
+ const m={kind:'software',product:'packer',platform:'windows',version:'1.0.0',name:'正式产品',notes:'更新说明',filename:'setup.exe'};
+ const r=await x.call('/api/releases','POST',Buffer.from('MZfixture'),{'Content-Type':'application/octet-stream','X-Release-Metadata':encodeURIComponent(JSON.stringify(m))});assert.equal(r.status,201);await x.call('/api/releases/'+r.value.id,'PATCH',{status:'published'});
+ const invalid=await x.call('/api/update-pushes/send','POST',{product:'packer',version:'1.0.0',licenseIds:['not-a-key']});assert.equal(invalid.status,400);assert.equal(x.app.store.state.updatePushes.length,0);
+ const push=await x.call('/api/update-pushes/send','POST',{product:'packer',version:'1.0.0',licenseIds:[l.license.id],force:true});assert.equal(push.status,201);assert.equal(push.value.count,1);assert.equal(push.value.pushes[0].status,'published');
+ const h={Authorization:'Bearer '+l.key,'X-Hetun-Activation':a.value.activationId},h2={Authorization:'Bearer '+other.key,'X-Hetun-Activation':b.value.activationId};
+ const feed=await x.call('/v1/notifications','GET',undefined,h,false);assert.equal(feed.status,200);const received=verified(feed.value,x.app.store.publicKey);assert.ok(JSON.stringify(received).includes(push.value.pushes[0].id));assert.ok(!JSON.stringify(received).includes('licenseIds'));
+ const otherFeed=await x.call('/v1/notifications','GET',undefined,h2,false);assert.equal(otherFeed.status,200);assert.ok(!JSON.stringify(verified(otherFeed.value,x.app.store.publicKey)).includes(push.value.pushes[0].id));
+});
