@@ -18,7 +18,7 @@
 
 激活 /v1/license/activate 和检查 /v1/license/check 返回 schemaVersion 4 的 Ed25519 签名租约，包含授权/客户/产品/设备身份、domain、authorizedDomains、authorizationMode、policyRevision、checkAfter、exp、permissions。客户端须校验公钥签名、issuer、nonce、本地绑定身份和期限。
 
-online 租约遵守普通离线宽限；silent-local 租约延长至授权到期时间，同时保留低频重连时间。策略不能隔空发送到断网设备：下次成功认证后获取最新策略，同一身份不重复占用名额。永久离线产品无法被远程撤销。主题客户端已接入启动认证、签名许可、静默重连和记录补传，online 另执行 30 秒认证新鲜度规则；打包器和影视中心仍需分别接入验收。
+online 新许可提供最多72小时断网宽限，不超过授权到期时间，每次启动认证，运行中60秒轮询并使用SSE催促认证；可信拒绝立即持久化并停止受限操作。silent-local 许可延长至授权到期时间，每次启动后台询问，新配置默认每小时重连，既有配置保留原周期。策略在下一次可信连接后生效，同一身份不重复占用名额。主题客户端已完成本批接入联测，打包器与影视中心仍需分别验收。规则和套餐语义详见 authorization-rules.md。
 
 ## Git 与发布
 

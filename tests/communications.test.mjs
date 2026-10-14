@@ -115,6 +115,6 @@ test('旧更新反馈不能覆盖更新后的产品版本与状态',async t=>{
 });
 
 test('健康检查只暴露服务状态，管理总览提供实际通知集合',async t=>{
- const x=await setup(t);const health=await x.call('/healthz');assert.equal(health.status,200);assert.deepEqual(health.value,{ok:true,service:'puffer-terminal',version:'0.2.3'});
+ const x=await setup(t);const health=await x.call('/healthz');assert.equal(health.status,200);assert.deepEqual(health.value,{ok:true,service:'puffer-terminal',version:'0.2.4'});
  const n=await x.notification('announcement');const overview=await x.call('/api/overview');assert.equal(overview.status,200);assert.equal(overview.value.announcements[0].id,n.id);assert.deepEqual(overview.value.updatePushes,[]);assert.deepEqual(overview.value.deliveryReceipts,[]);
 });

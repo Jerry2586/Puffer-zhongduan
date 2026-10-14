@@ -5,11 +5,11 @@ export const RESOURCES = ['packer', 'theme-center', 'operations', 'client', 'tem
 const defaults = { packer:'Jerry2586/Puffer-dabaoqi', 'theme-center':'Jerry2586/Puffer-zhutiqi', operations:'Jerry2586/Puffer-yunyingduan', client:'', templates:'' };
 export function initializeCenter(state) {
   state.productRecords ??= []; state.releaseHistory ??= []; state.repositories ??= {};
-  state.settings.authorizationMode ??= 'online'; state.settings.policyRevision ??= 1; state.settings.reconnectHours ??= 24;
+  state.settings.authorizationMode ??= 'online'; state.settings.policyRevision ??= 1; state.settings.reconnectHours ??= 1;
   for (const p of RESOURCES) state.repositories[p] ??= {product:p,repository:defaults[p],branch:'main'};
 }
 export function policy(store, license) {
-  return {mode:license.authorizationMode || store.state.settings.authorizationMode || 'online', revision:String(store.state.settings.policyRevision || 1)+'.'+String(license.policyRevision || 1), domains:license.domains || [], reconnectHours:store.state.settings.reconnectHours || 24};
+  return {mode:license.authorizationMode || store.state.settings.authorizationMode || 'online', revision:String(store.state.settings.policyRevision || 1)+'.'+String(license.policyRevision || 1), domains:license.domains || [], reconnectHours:store.state.settings.reconnectHours || 1, onlineGraceSeconds:72*3600, checkIntervalSeconds:60};
 }
 export function policyFields(input) {
   const next = {};

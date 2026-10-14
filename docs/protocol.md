@@ -16,7 +16,7 @@ product 为 theme-center、packer、operations。前两者提交 deviceId（8–
 
 lease 结构：algorithm=Ed25519、keyId、payload、signature。payload 和 signature 均为 base64url；**验签对象是解码后的 payload 原始字节，不能重新序列化 JSON 后验签**。解码后的字段包括 schemaVersion=4、issuer、licenseId、activationId、product、binding、nonce、iat、exp、licenseExpiresAt、checkAfter、permissions。时间为 Unix 秒。
 
-客户端必须验签、匹配受信 issuer/keyId、自身产品及绑定、此次 nonce，并校验签发与到期时间。缓存后离线验证不再匹配新 nonce，而是校验已缓存签名和绑定。在 checkAfter 后尝试联网复查；暂时断网仅可用至 exp。联网得到拒绝需立即停用受限功能。系统时间回拨防护、安全存储由客户端负责。online 服务端租约使用设置中的 checkHours/offlineDays，exp 不超过授权到期时间；主题客户端另执行每次启动认证及 30 秒认证新鲜度规则。silent-local 的 exp 为授权到期时间，按 reconnectHours 静默重连。客户端必须区分可信拒绝与网络故障。payload 还含 authorizationMode、policyRevision、authorizedDomains、reconnectHours、entitlement 和 offlineMigration；详见 architecture.md。
+客户端必须验签、匹配受信 issuer/keyId、自身产品及绑定、此次 nonce，并校验签发与到期时间。缓存后离线验证不再匹配新 nonce，而是校验已缓存签名和绑定。在 checkAfter 后尝试联网复查；暂时断网仅可用至 exp。联网得到拒绝需立即停用受限功能。系统时间回拨防护、安全存储由客户端负责。online 新许可含 onlineGraceSeconds=259200、checkIntervalSeconds=60；exp 不超过 iat+259200 或授权到期时间，checkAfter 为签发后60秒。主题每次启动认证；离线重启不续期，旧许可保留旧版严格新鲜度检查。silent-local 的 exp 为授权到期时间，按 reconnectHours 静默重连。客户端必须区分可信拒绝与网络故障。payload 还含 authorizationMode、policyRevision、authorizedDomains、reconnectHours、entitlement 和 offlineMigration；详见 architecture.md。
 
 ## 更新、目录和成品
 

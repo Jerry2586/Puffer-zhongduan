@@ -1,3 +1,4 @@
+import { savePackage, packageGrant, initializePackages } from './authorization-packages.mjs';
 import { acquireInstance } from './instance.mjs';
 import { createAuthorizationWatch, authorizationMutation } from './authorization-watch.mjs';
 import { updateSoftware } from './software-update.mjs';
@@ -131,7 +132,7 @@ export async function createTerminal(options) {
     if(r==='/v1/terminal-config'&&m==='GET'){authorizedBinding(store,req);return json(res,200,configuration(store,externalOrigin));}
     if(r==='/v1/terminal-config/ack'&&m==='POST'){const {binding}=authorizedBinding(store,req);const result=acknowledge(store,binding,await body(req),externalOrigin);await store.commit();return json(res,200,result);}
     if(migrating(store)&&m==='POST'&&['/v1/jobs','/v1/worker/claim'].includes(r))throw failure('终端迁移中，暂不接受新构建任务',503);
-    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.3' });
+    if (r === '/healthz' && m === 'GET') return json(res, 200, { ok: true, service: 'puffer-terminal', version: '0.2.4' });
     if (r === '/api/login' && m === 'POST') {
       sameOrigin(req); rate(req); const b = await body(req);
       if (b.username !== 'admin' || typeof b.password !== 'string' || !(await checkPassword(b.password, store.admin))) throw failure('用户名或密码错误', 401);
@@ -176,6 +177,10 @@ export async function createTerminal(options) {
       if (r === '/api/self-update' && m === 'GET') return json(res,200,await updater.status());
       if (r === '/api/self-update/check' && m === 'POST') return json(res,200,await updater.check());
       if (r === '/api/self-update/install' && m === 'POST') { const b=await body(req); const job=await updater.queue(b.revision); store.audit('请求终端 Git 更新',job.revision); await store.commit(); return json(res,202,job); }
+      if(r==='/api/authorization-packages'&&m==='GET')return json(res,200,store.state.authorizationPackages);
+      if(r==='/api/authorization-packages'&&m==='POST'){const item=savePackage(store,await body(req));store.audit('新增授权套餐',item.id);await store.commit();return json(res,201,item);}
+      const packageRoute=r.match(/^\/api\/authorization-packages\/([a-f0-9-]{36})$/);
+      if(packageRoute){const item=store.state.authorizationPackages.find(x=>x.id===packageRoute[1]);if(!item)throw failure('套餐不存在',404);if(m==='PATCH'){const saved=savePackage(store,await body(req),item.id);store.audit('编辑授权套餐',item.id);await store.commit();return json(res,200,saved);}if(m==='DELETE'){store.state.authorizationPackages=store.state.authorizationPackages.filter(x=>x.id!==item.id);store.audit('删除授权套餐',item.id);await store.commit();return json(res,200,{ok:true});}}
       if(r==='/api/authorization-logs'&&m==='GET')return json(res,200,filteredLogs(store,u.searchParams));
       if(r==='/api/authorization-distribution'&&m==='GET')return json(res,200,{mode:store.state.settings.authorizationMode,revision:store.state.settings.policyRevision,devices:store.state.bindings.map(b=>({id:b.id,licenseId:b.licenseId,product:b.product,deviceId:b.binding,status:b.status,lastSeenAt:b.lastSeenAt,received:b.policyRevision===policy(store,store.state.licenses.find(l=>l.id===b.licenseId)||{}).revision,acknowledged:!!b.policyAcknowledgedAt&&b.policyRevision===policy(store,store.state.licenses.find(l=>l.id===b.licenseId)||{}).revision}))});
       if (r === '/api/authorization-policy' && m === 'PATCH') {
@@ -202,7 +207,7 @@ export async function createTerminal(options) {
       }
       if (r === '/api/overview' && m === 'GET') {
         const s = store.state;
-        return json(res, 200, { announcements:s.announcements, updatePushes:s.updatePushes, deliveryReceipts:s.deliveryReceipts, customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return {...rest,...(artifact?{artifact:artifact.filename,bytes:artifact.bytes,sha256:artifact.sha256}:{})}; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.3' });
+        return json(res, 200, { announcements:s.announcements, updatePushes:s.updatePushes, deliveryReceipts:s.deliveryReceipts, authorizationPackages:s.authorizationPackages, customers: s.customers, licenses: s.licenses.map(publicLicense), bindings: s.bindings, releases: s.releases.map(publicRelease), jobs: s.jobs.map(j => { const { artifact, ...rest } = j; return {...rest,...(artifact?{artifact:artifact.filename,bytes:artifact.bytes,sha256:artifact.sha256}:{})}; }), nodes: s.nodes.map(n => { const { tokenHash, ...rest } = n; return rest; }), audit: s.audit.slice(0, 100), settings: s.settings, repositories:s.repositories, productRecords:s.productRecords.slice(0,500), releaseHistory:s.releaseHistory.slice(0,500), recordCount:s.productRecords.length, origin: externalOrigin, publicKey: store.publicKey, keyId: sha(store.publicKey).slice(0, 16), version: '0.2.4' });
       }
       if(r==='/api/integrations' && m==='GET') {
         let deployment=null;
@@ -225,7 +230,7 @@ export async function createTerminal(options) {
         try{
           inspected=await inspectMigrationFile(store.root,uploaded.path,password);
           if(u.searchParams.get('confirm')!==sha(inspected.value.publicKey).slice(0,16))return json(res,200,{preview:inspected.summary});
-          const summary=await importMigration(store,inspected);initializeCenter(store.state);initializeAuthority(store.state);await store.commit();sessions.clear();res.setHeader('Set-Cookie',cookie('',0));
+          const summary=await importMigration(store,inspected);initializeCenter(store.state);initializeAuthority(store.state);initializePackages(store.state);await store.commit();sessions.clear();res.setHeader('Set-Cookie',cookie('',0));
           return json(res,200,{imported:summary,relogin:true});
         }finally{await inspected?.cleanup();await uploaded.cleanup();}
       }
@@ -234,7 +239,8 @@ export async function createTerminal(options) {
         const c = { id: crypto.randomUUID(), name, contact: String(b.contact || '').slice(0, 120), createdAt: now() }; store.state.customers.unshift(c); store.audit('创建客户', c.id); await store.commit(); return json(res, 201, c);
       }
       if (r === '/api/licenses' && m === 'POST') {
-        const b = await body(req);
+        let b = await body(req);
+        if(b.packageId)b=packageGrant(store,b);else {delete b.packageSnapshot;delete b.domainRequired;delete b.entitlement;}
         let createdCustomer = null;
         if (b.customerId) { find(store.state.customers, b.customerId, '客户'); if (b.customer !== undefined) throw failure('请选择已有客户或新建客户，不可同时提交'); }
         else { const name = typeof b.customer?.name === 'string' ? b.customer.name.trim() : ''; const contact = b.customer?.contact ?? ''; if (!name || name.length > 80 || typeof contact !== 'string' || contact.length > 120) throw failure('客户名称为 1–80 字，联系方式最多120字'); createdCustomer = {id:crypto.randomUUID(),name,contact,createdAt:now()}; b.customerId = createdCustomer.id; }
@@ -243,7 +249,7 @@ export async function createTerminal(options) {
         const quotas = {}; for (const p of PRODUCTS) { quotas[p] = Number(b.quotas?.[p] ?? (p === 'operations' ? 1 : 2)); if (!Number.isInteger(quotas[p]) || quotas[p] < 1 || quotas[p] > 100) throw failure('授权名额必须为 1–100'); }
         const fields=policyFields(b);
         const key = 'HTN_' + crypto.randomBytes(32).toString('base64url');
-        const l = { ...fields, policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label?.trim() || (b.products.length===3?'三产品统一授权':b.products.map(p=>({'theme-center':'主题中心',packer:'打包器',operations:'影视中心'}[p])).join('、')+'授权')).slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
+        const l = { ...fields, domainRequired:b.domainRequired===true, entitlement:b.entitlement==='permanent'?'permanent':'term', ...(b.packageSnapshot?{packageSnapshot:b.packageSnapshot}:{}), policyRevision:1, id: crypto.randomUUID(), customerId: b.customerId, label: String(b.label?.trim() || (b.products.length===3?'三产品统一授权':b.products.map(p=>({'theme-center':'主题中心',packer:'打包器',operations:'影视中心'}[p])).join('、')+'授权')).slice(0, 80), products: b.products, quotas, permissions: { sourceDownload: b.permissions?.sourceDownload !== false, localBuild: b.permissions?.localBuild !== false, cloudBuild: b.permissions?.cloudBuild !== false }, status: 'active', expiresAt: new Date(expiry).toISOString(), createdAt: now(), keyHash: sha(key) };
         if(createdCustomer){store.state.customers.unshift(createdCustomer);store.audit('创建客户',createdCustomer.id);} store.state.licenses.unshift(l); store.audit('签发授权', l.id); await store.commit(); return json(res, 201, { license: publicLicense(l), key });
       }
       const lr = r.match(/^\/api\/licenses\/([a-f0-9-]{36})(\/rotate)?$/);
@@ -260,6 +266,7 @@ export async function createTerminal(options) {
           const b = await body(req);
           // Validate the complete edit before changing any stored authorization fields.
           const fields=policyFields(b), changes={...fields};
+          if(b.domains!==undefined && l.domainRequired && !fields.domains?.length)throw failure('此授权需要至少一个域名');
           let customerChanges=null; if(b.customer!==undefined){const name=typeof b.customer?.name==='string'?b.customer.name.trim():'';const contact=b.customer?.contact??'';if(!name||name.length>80||typeof contact!=='string'||contact.length>120)throw failure('客户名称为 1–80 字，联系方式最多120字');customerChanges={name,contact};}
           if(b.products!==undefined){if(!Array.isArray(b.products)||!b.products.length||new Set(b.products).size!==b.products.length||b.products.some(p=>!PRODUCTS.includes(p)))throw failure('至少选择一个有效授权产品');changes.products=[...b.products];}
           if(b.label!==undefined){if(typeof b.label!=='string'||!b.label.trim()||b.label.trim().length>80)throw failure('授权名称必须为 1–80 字');changes.label=b.label.trim();}
@@ -311,7 +318,7 @@ export async function createTerminal(options) {
         const result=activate(store,req,b,externalOrigin),binding=store.state.bindings.find(x=>x.id===result.activationId);
         Object.assign(binding,net,{machineId:String(b.machineId||b.deviceId||'').slice(0,120)});
         if(oldRevision!==binding.policyRevision)binding.policyAcknowledgedAt=null;
-        if(!previous||oldRevision!==binding.policyRevision||!last||Date.now()-Date.parse(last)>86400000)authorizationLog(store,{licenseId:known.id,activationId:binding.id,product:binding.product,deviceId:binding.binding,type:previous?'check':'activation',result:'accepted',policyRevision:binding.policyRevision,mode:binding.authorizationMode,...net});
+        if(!previous||oldRevision!==binding.policyRevision||!last||Date.now()-Date.parse(last)>86400000)authorizationLog(store,{licenseId:known.id,activationId:binding.id,product:binding.product,deviceId:binding.binding,version:binding.version,type:previous?'check':'activation',result:'accepted',policyRevision:binding.policyRevision,mode:binding.authorizationMode,...net});
         await store.commit();return json(res,200,result);
       }catch(e){
         const status=e.status||400,validIdentity=PRODUCTS.includes(b.product)&&/^[A-Za-z0-9_-]{16,100}$/.test(b.nonce||'')&&typeof b.deviceId==='string'&&b.deviceId.length<=120;

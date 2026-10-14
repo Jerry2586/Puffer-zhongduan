@@ -1,3 +1,4 @@
+import { initializePackages } from './authorization-packages.mjs';
 import {authorizationLog} from './authorization-log.mjs';
 import { initializeCommunications } from './communications.mjs';
 import { initializeAuthority } from './authority.mjs';
@@ -41,6 +42,7 @@ export async function openStore(root) {
   if (state.schemaVersion !== 1) throw new Error('数据版本不兼容，禁止覆盖');
   state.authorizationLogs ??= []; state.revocations ??= []; state.settings.authorizationLogDays ??= 365;
   initializeCenter(state);
+  initializePackages(state);
   initializeCommunications(state);
   initializeAuthority(state);
   let admin;

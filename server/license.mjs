@@ -51,6 +51,7 @@ export function activate(store, req, b, issuer) {
   if (typeof b.nonce !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(b.nonce)) throw failure('需要有效的请求随机数');
   const currentPolicy = policy(store, license);
   const domain = b.domain ? hostname(b.domain) : '';
+  if (license.domainRequired && !domain) throw failure('此授权必须绑定域名',403);
   if (currentPolicy.domains.length && !currentPolicy.domains.includes(domain)) throw failure('此域名不在授权范围内', 403);
   let record = store.state.bindings.find(x => x.licenseId === license.id && x.product === b.product && x.binding === binding);
   if (record?.status === 'disabled') throw failure('此绑定已停用，请联系管理员', 403);
@@ -62,9 +63,9 @@ export function activate(store, req, b, issuer) {
     store.state.bindings.unshift(record); store.audit('产品激活', record.id);
   }
   Object.assign(record, { version: b.version, lastSeenAt: now(), os:String(b.os||'').slice(0,80), label: String(b.label || '').slice(0, 80), domain:domain || record.domain || '', policyRevision:currentPolicy.revision, authorizationMode:currentPolicy.mode, policyFetchedAt:now() });
-  const iat = Math.floor(Date.now() / 1000), days = store.state.settings.offlineDays;
-  const payload = { schemaVersion: 4, issuer, offlineMigration:currentPolicy.mode==='silent-local', offlineDays:days, customerId:license.customerId, domain:domain || record.domain || '', authorizationMode:currentPolicy.mode, policyRevision:currentPolicy.revision, authorizedDomains:currentPolicy.domains, reconnectHours:currentPolicy.reconnectHours, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: currentPolicy.mode==='silent-local' ? Math.floor(Date.parse(license.expiresAt) / 1000) : Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, entitlement:license.entitlement||'term', checkAfter: Math.min(iat + (currentPolicy.mode==='silent-local' ? currentPolicy.reconnectHours : store.state.settings.checkHours) * 3600, Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
-  if(migrating(store)&&Number.isFinite(Date.parse(store.state.authority.graceUntil)))payload.exp=Math.max(payload.exp,Math.min(Math.floor(Date.parse(store.state.authority.graceUntil)/1000),Math.floor(Date.parse(license.expiresAt)/1000)));
+  const iat = Math.floor(Date.now() / 1000), days = 3;
+  const payload = { schemaVersion: 4, issuer, offlineMigration:currentPolicy.mode==='silent-local', offlineDays:days, onlineGraceSeconds:currentPolicy.onlineGraceSeconds, checkIntervalSeconds:currentPolicy.checkIntervalSeconds, customerId:license.customerId, domain:domain || record.domain || '', authorizationMode:currentPolicy.mode, policyRevision:currentPolicy.revision, authorizedDomains:currentPolicy.domains, reconnectHours:currentPolicy.reconnectHours, licenseId: license.id, activationId: record.id, product: b.product, binding, nonce: b.nonce, iat, exp: currentPolicy.mode==='silent-local' ? Math.floor(Date.parse(license.expiresAt) / 1000) : Math.min(iat + days * 86400, Math.floor(Date.parse(license.expiresAt) / 1000)), licenseExpiresAt: license.expiresAt, entitlement:license.entitlement||'term', checkAfter: Math.min(iat + (currentPolicy.mode==='silent-local' ? currentPolicy.reconnectHours * 3600 : currentPolicy.checkIntervalSeconds), Math.floor(Date.parse(license.expiresAt) / 1000)), permissions: license.permissions };
+  if(currentPolicy.mode==='silent-local'&&migrating(store)&&Number.isFinite(Date.parse(store.state.authority.graceUntil)))payload.exp=Math.max(payload.exp,Math.min(Math.floor(Date.parse(store.state.authority.graceUntil)/1000),Math.floor(Date.parse(license.expiresAt)/1000)));
   return { terminalConfig:configuration(store,issuer), activationId: record.id, lease: sign(store, payload), offlineDays: days, policy:currentPolicy };
 }
 export function authorizedBinding(store, req, product) {

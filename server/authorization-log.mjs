@@ -47,7 +47,7 @@ export function filteredLogs(store,params) {
  const fields=['licenseId','product','deviceId','type','result','country'];const from=params.get('from'),to=params.get('to');
  if(from&&!Number.isFinite(Date.parse(from))||to&&!Number.isFinite(Date.parse(to)))throw failure('日期过滤无效');
  const items=store.state.authorizationLogs.filter(x=>fields.every(k=>!params.get(k)||x[k]===params.get(k))&&(!from||Date.parse(x.receivedAt)>=Date.parse(from))&&(!to||Date.parse(x.receivedAt)<=Date.parse(to)));
- return {total:items.length,offset,items:items.slice(offset,offset+100),retentionDays:store.state.settings.authorizationLogDays};
+ return {total:items.length,offset,items:items.slice(offset,offset+100).map(x=>{const l=[...store.state.licenses,...(store.state.revocations||[])].find(l=>l.id===x.licenseId),b=store.state.bindings.find(b=>b.id===x.activationId);return {...x,licenseLabel:l?.label||'',version:x.version||''};}),retentionDays:store.state.settings.authorizationLogDays};
 }
 export function reportEvents(store,license,binding,input,network) {
  if(!Array.isArray(input.events)||input.events.length>100)throw failure('一次补传最多100条');
@@ -55,7 +55,7 @@ export function reportEvents(store,license,binding,input,network) {
  for(const e of input.events) {
   if(!/^[A-Za-z0-9_-]{16,100}$/.test(e.eventId||'')||!['offline-migration-import','offline-migration-export','reconnect','policy-received','theme-export','local-build','source-download','template-install','theme-install'].includes(e.type)||!Number.isFinite(Date.parse(e.occurredAt))||Date.parse(e.occurredAt)>Date.now()+300000)throw failure('离线记录格式无效');
   const permission={'local-build':'localBuild','source-download':'sourceDownload'}[e.type];if(permission&&!license.permissions?.[permission])throw failure('未授权此记录对应功能',403);if(e.type==='policy-received'&&!/^\d+\.\d+$/.test(e.policyRevision||''))throw failure('策略回执版本无效');
-  const content={policyRevision:e.type==='policy-received'?e.policyRevision:undefined,licenseId:license.id,activationId:binding.id,product:binding.product,deviceId:binding.binding,eventId:e.eventId,type:e.type,occurredAt:new Date(e.occurredAt).toISOString(),parentDeviceId:String(e.parentDeviceId||'').slice(0,120)};
+  const content={policyRevision:e.type==='policy-received'?e.policyRevision:undefined,licenseId:license.id,activationId:binding.id,product:binding.product,version:binding.version,deviceId:binding.binding,eventId:e.eventId,type:e.type,occurredAt:new Date(e.occurredAt).toISOString(),parentDeviceId:String(e.parentDeviceId||'').slice(0,120)};
   const digest=sha(JSON.stringify(content));const old=store.state.authorizationLogs.find(x=>x.licenseId===license.id&&x.eventId===e.eventId);
   if(old&&old.digest!==digest)throw failure('重复事件内容冲突',409);
   if(!old)authorizationLog(store,{...content,digest,result:'reported',...network,ipMeaning:'reconnection IP; not historical offline IP'});accepted.push(e.eventId);

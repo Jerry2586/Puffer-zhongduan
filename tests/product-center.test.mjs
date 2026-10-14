@@ -174,3 +174,15 @@ test('按 Key 批量推送一个版本，同一客户其他 Key 不接收，失�
  const feed=await x.call('/v1/notifications','GET',undefined,h,false);assert.equal(feed.status,200);const received=verified(feed.value,x.app.store.publicKey);assert.ok(JSON.stringify(received).includes(push.value.pushes[0].id));assert.ok(!JSON.stringify(received).includes('licenseIds'));
  const otherFeed=await x.call('/v1/notifications','GET',undefined,h2,false);assert.equal(otherFeed.status,200);assert.ok(!JSON.stringify(verified(otherFeed.value,x.app.store.publicKey)).includes(push.value.pushes[0].id));
 });
+
+ test('套餐签发快照、修改冲突、删除保留授权与签名宽限',async t=>{
+ const x=await setup(t);const fields={name:'统一年套餐',products:['theme-center','packer','operations'],durationUnit:'years',duration:1,authorizationMode:'online',domainRule:'required',quotas:{packer:2,'theme-center':2,operations:1},permissions:{sourceDownload:true,localBuild:true,cloudBuild:false}};
+ const created=await x.call('/api/authorization-packages','POST',fields);assert.equal(created.status,201);const p=created.value;
+ const missing=await x.call('/api/licenses','POST',{customer:{name:'测试'},packageId:p.id,packageRevision:p.revision});assert.equal(missing.status,400);
+ const issued=await x.call('/api/licenses','POST',{customer:{name:'套餐用户'},label:'套餐用户',domains:['ops.example.com'],packageId:p.id,packageRevision:p.revision});assert.equal(issued.status,201);assert.equal(issued.value.license.packageSnapshot.name,fields.name);
+ const activated=await x.activate(issued.value.key);assert.equal(activated.status,200);const lease=verified(activated.value.lease,x.app.store.publicKey);assert.equal(lease.onlineGraceSeconds,259200);assert.equal(lease.exp-lease.iat,259200);assert.equal(lease.checkAfter-lease.iat,60);
+ assert.equal((await x.call('/api/authorization-packages/'+p.id,'PATCH',{...fields,name:'修改套餐',duration:2})).status,200);
+ assert.equal((await x.call('/api/licenses','POST',{customer:{name:'过期选择'},domains:['ops.example.com'],packageId:p.id,packageRevision:p.revision})).status,409);
+ assert.equal((await x.call('/api/authorization-packages/'+p.id,'DELETE')).status,200);assert.equal(x.app.store.state.licenses.find(l=>l.id===issued.value.license.id).packageSnapshot.name,fields.name);
+ assert.equal((await x.activate(issued.value.key)).status,200);
+ });

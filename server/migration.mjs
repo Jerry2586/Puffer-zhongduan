@@ -1,3 +1,4 @@
+import { validatePackages } from './authorization-packages.mjs';
 import { validateCommunications } from './communications.mjs';
 import { validateAuthority } from './authority.mjs';
 import fs from 'node:fs/promises';
@@ -61,6 +62,7 @@ export function validateSnapshot(value, suppliedFiles) {
   for(const list of lists)if(!Array.isArray(s[list])||s[list].some(x=>!x||typeof x.id!=='string')||new Set(s[list].map(x=>x.id)).size!==s[list].length)throw error('迁移业务列表无效：'+list);
   validateAuthority(s.authority);
   validateCommunications(s);
+  validatePackages(s);
   const products=['packer','theme-center','operations'];
   const string=v=>typeof v==='string',date=v=>string(v)&&Number.isFinite(Date.parse(v));
   if(!date(value.createdAt)||!string(value.origin))throw error('迁移来源信息无效');
